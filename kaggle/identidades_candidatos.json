@@ -1,0 +1,16 @@
+{
+ "_descripcion": "sha256_celdas_tipadas esperado por huella v1 (kaggle/identidad_notebook.py). experimento.sh lo exige antes de subir cuando la huella v1 figura acá. Valores de la revisión externa (Astra, 20-oct-2026), verificados contra las reconstrucciones y contra las versiones 14 y 21 recuperadas de Kaggle.",
+ "origen": {
+  "4056fbfc69bb": "5b752682aa91d01f618f751802b8b90530b67746f59e7a18b77b3dbdf6b5d8df"
+ },
+ "candidatos": {
+  "413a0b289a64": "53cdaf3ec44f789a91848b6891d87221515543481135b94d454e3b33f08193af",
+  "ff42d7f18a5a": "0595d5c8be7176f528f8f3d7140d9bd7c5409f7bf1fbf9fa00a3e9ffd922a8c9",
+  "5c66785823b6": "4f889ac2e98532890b8992a8056ce890b41e3e093f8f279d63abfefe497f7035"
+ },
+ "nombres": {
+  "413a0b289a64": "A v4s",
+  "ff42d7f18a5a": "B vivos-auto",
+  "5c66785823b6": "C Franzen sin injerto"
+ }
+}

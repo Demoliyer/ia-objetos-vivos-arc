@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.venv/
+# Juegos de ARC y datos de partidas: se usan en local, nunca se publican
+environment_files/
+trayectorias/
+vivos-data/
+medicion*.txt
+medicion*.tgz
+# Kaggle: credenciales y trabajo local
+kaggle/token.txt
+kaggle/usuario.txt
+kaggle/kit/
+kaggle/experimento/
+kaggle/franzen_nb/
+kaggle/base_franzen/
+.env
