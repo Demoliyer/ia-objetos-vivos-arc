@@ -24,7 +24,7 @@ ORIGEN = RAIZ / "kaggle" / "franzen_nb" / "original.ipynb"
 HUELLA_ORIGEN = "4056fbfc69bb"
 # Condiciones que se repiten en el set oculto: Franzen sin injerto y vivos-auto (la de 29,28 y 25,71).
 # Si un cambio en esta rama altera alguno de estos notebooks, la prueba falla antes de entregar.
-HUELLAS = {(): "5c66785823b6", ("--vivos-auto",): "ff42d7f18a5a"}
+HUELLAS = {(): "5c66785823b6", ("--vivos-auto",): "413a0b289a64"}  # rama v4s: --vivos-auto produce v4s
 TIPADAS = json.loads((RAIZ / "kaggle" / "identidades_candidatos.json").read_text())
 
 
@@ -212,8 +212,8 @@ k = max(i for i, c in enumerate(nb["cells"]) if c["cell_type"] == "code")
 nb["cells"][k]["cell_type"] = "raw"
 json.dump(nb, open(destino, "w"))
 """)
-        rc, out = self.correr("--vivos-auto", "--huella=ff42d7f18a5a")
-        self.assertIn("huella_notebook=ff42d7f18a5a", out)
+        rc, out = self.correr("--vivos-auto", "--huella=413a0b289a64")
+        self.assertIn("huella_notebook=413a0b289a64", out)
         self.assertNotIn("PUSH LLAMADO", out)
         self.assertIn("cambió el tipo de alguna celda", out)
 

@@ -1,7 +1,9 @@
 """Pruebas del verificador/planificador para simuladores escritos por el modelo."""
 from types import SimpleNamespace as NS
 
-from vivos.simulador import auto_check, check_model, mouse, parse_action, plan
+from vivos.simulador import (auto_check, auto_check_state, check_model, check_state, mouse,
+                             parse_action, plan, plan_state, shift_test, state_shift_test,
+                             nombres_que_se_pierden)
 
 N = 12  # tablero chico con franja de borde de 4: interior 4x4 (filas/cols 4..7)
 MOV = {"UP": (-1, 0), "DOWN": (1, 0), "LEFT": (0, -1), "RIGHT": (0, 1)}
@@ -209,6 +211,383 @@ def test_auto_check_avisa_si_no_llego_a_revisar_todo():
     texto = auto_check(lento, trans, actual, time_limit=0.5)
     assert "could be checked" in texto
     assert "explains everything" not in texto
+
+
+def _distancia_a_esquina(g):
+    r, c = next((r, c) for r in range(N) for c in range(N) if g[r][c] == 3)
+    return abs(r - 7) + abs(c - 7)
+
+
+def test_plan_por_costo_llega_a_cero():
+    _, actual = historia(["RIGHT"])
+    p = plan(fisica_delta, _distancia_a_esquina, actual, ["UP", "DOWN", "LEFT", "RIGHT"], cost=True)
+    assert p["plan"] is not None
+    assert p["cost"] == 0
+    assert p["length"] == 5
+
+
+def test_plan_por_costo_devuelve_el_mejor_parcial():
+    _, actual = historia(["RIGHT"])
+    p = plan(fisica_delta, lambda g: _distancia_a_esquina(g) + 0.5, actual,
+             ["UP", "DOWN", "LEFT", "RIGHT"], cost=True)
+    assert p["plan"] is None
+    assert p["best_cost"] == 0.5
+    assert p["start_cost"] == 5.5
+    assert p["best_length"] == 5
+
+
+def test_meta_booleana_sigue_siendo_bfs():
+    _, actual = historia(["RIGHT"])
+    p = plan(fisica_delta, lambda g: _distancia_a_esquina(g) == 0, actual,
+             ["UP", "DOWN", "LEFT", "RIGHT"])
+    assert p["length"] == 5
+    assert "cost" not in p
+
+
+M = 20  # tablero con paredes dibujadas (color 1) y borde de 4: interior 4..15
+
+
+def _tablero_paredes(pos):
+    g = [[0] * M for _ in range(M)]
+    for i in range(M):
+        g[4][i] = g[15][i] = g[i][4] = g[i][15] = 1  # paredes del recinto
+    g[pos[0]][pos[1]] = 3
+    return g
+
+
+def _general(g, a):
+    """Física leída del tablero: el avatar (3) avanza si la celda destino es piso (0)."""
+    r, c = next((r, c) for r in range(M) for c in range(M) if g[r][c] == 3)
+    dr, dc = MOV.get(a, (0, 0))
+    if g[r + dr][c + dc] != 0:
+        return None
+    return {(r, c): 0, (r + dr, c + dc): 3}
+
+
+def _fijo(g, a):
+    """Lo mismo, pero con las posiciones del nivel escritas a mano."""
+    tabla = {((8, 8), "RIGHT"): (8, 9), ((8, 9), "DOWN"): (9, 9), ((9, 9), "LEFT"): (9, 8)}
+    for (pos, accion), destino in tabla.items():
+        if g[pos[0]][pos[1]] == 3 and accion == a:
+            return {pos: 0, destino: 3}
+    return None
+
+
+def _historia_paredes(acciones, nivel=1):
+    frames = [NS(_grid=_tablero_paredes((8, 8)), level=nivel)]
+    trans = []
+    for a in acciones:
+        g = [f[:] for f in frames[-1]._grid]
+        for (r, c), v in (_general(g, a) or {}).items():
+            g[r][c] = v
+        nuevo = NS(_grid=g, level=nivel)
+        trans.append(NS(action=a, before_frame=frames[-1], after_frame=nuevo, result={}))
+        frames.append(nuevo)
+    return trans, frames[-1]
+
+
+def test_shift_test_distingue_general_de_coordenadas_fijas():
+    trans, actual = _historia_paredes(["RIGHT", "DOWN", "LEFT"])
+    assert check_model(_fijo, trans, actual)["all_interior_ok"] is True
+    assert shift_test(_general, trans, actual) is True
+    assert shift_test(_fijo, trans, actual) is False
+    assert shift_test(_general, [], actual) is None
+
+
+def test_auto_check_al_empezar_nivel_valida_el_step_anterior():
+    trans, _ = _historia_paredes(["RIGHT", "DOWN", "LEFT"])
+    nuevo = NS(_grid=_tablero_paredes((10, 10)), level=2)  # nivel 2 sin transiciones todavía
+    bien = auto_check(_general, trans, nuevo)
+    assert "position-independent" in bien
+    mal = auto_check(_fijo, trans, nuevo)
+    assert "shifted by one cell" in mal
+    assert "plan_with_model" not in mal
+
+
+def test_auto_check_avisa_si_step_lee_el_tablero_global():
+    trans, actual = _historia_paredes(["RIGHT"])
+
+    def espia(grid, action):
+        return current_frame  # noqa: F821 - es justamente el error que se detecta
+
+    assert "live global current_frame" in auto_check(espia, trans, actual)
+
+
+def test_minimo_local_se_avisa():
+    _, actual = historia(["RIGHT"])
+    p = plan(lambda g, a: None, _distancia_a_esquina, actual, ["UP"], cost=True)
+    assert p["plan"] is None
+    assert "local minimum" in p["reason"]
+
+
+def test_meta_entera_sin_cost_se_lee_como_verdad():
+    # H1: un goal que devuelve 1/0 (p. ej. int(llegó)) no es una distancia.
+    _, actual = historia(["RIGHT"])
+    p = plan(fisica_delta, lambda g: int(_distancia_a_esquina(g) == 0), actual,
+             ["UP", "DOWN", "LEFT", "RIGHT"])
+    assert p["length"] == 5
+    assert "cost" not in p
+
+
+def test_distancia_sin_cost_pide_cost_true():
+    _, actual = historia(["RIGHT"])
+    for meta in (_distancia_a_esquina, lambda g: float("nan")):
+        p = plan(fisica_delta, meta, actual, ["UP"])
+        assert p["plan"] is None and "cost=True" in p["reason"]
+
+
+def test_costo_nan_o_no_numerico():
+    # H5: NaN no es un costo; al inicio se rechaza, en la búsqueda se cuenta como error.
+    _, actual = historia(["RIGHT"])
+    p = plan(fisica_delta, lambda g: float("nan"), actual, ["UP"], cost=True)
+    assert p["plan"] is None and "finite number" in p["reason"]
+    p = plan(fisica_delta, lambda g: "lejos", actual, ["UP"], cost=True)
+    assert p["plan"] is None and "finite number" in p["reason"]
+    primero = {"v": True}
+
+    def costo(g):
+        if primero["v"]:
+            primero["v"] = False
+            return 3
+        return float("nan")
+    p = plan(fisica_delta, costo, actual, ["UP", "DOWN"], cost=True)
+    assert p["plan"] is None and p["step_errors"] >= 1
+
+
+def test_shift_test_ignora_el_hud_exterior():
+    # H2: una barra de pasos en la franja exterior no debe descartar el caso.
+    trans, actual = _historia_paredes(["RIGHT", "DOWN", "LEFT"])
+    for t in trans:
+        g = [f[:] for f in t.after_frame._grid]
+        g[0][0] = 9
+        t.after_frame = NS(_grid=g, level=t.after_frame.level)
+
+    def general_hud(g, a):
+        d = _general(g, a)
+        if d is not None:
+            d[(0, 0)] = 9
+        return d
+    assert shift_test(general_hud, trans, actual) is True
+    assert shift_test(_fijo, trans, actual) is False
+
+
+def test_shift_test_prediccion_rara_es_false():
+    # H4: una predicción con filas no comparables no lanza.
+    trans, actual = _historia_paredes(["RIGHT"])
+    assert shift_test(lambda g, a: [None] * M, trans, actual) is False
+
+
+def test_aviso_de_global_se_suma_al_reporte():
+    # H3: el aviso no tapa el informe normal.
+    trans, actual = _historia_paredes(["RIGHT", "DOWN", "LEFT"])
+
+    def espia(grid, action, _f=_general):
+        if False:
+            return current_frame  # noqa: F821
+        return _f(grid, action)
+    texto = auto_check(espia, trans, actual)
+    assert "reproduces 3/3" in texto
+    assert "live global current_frame" in texto
+
+
+# --- v4: informe por familia, cambios faltantes/inventados y modelo de estado ---
+
+def _historia_mixta():
+    """Flechas que mueven el avatar y un SPACE que pinta (12,12): mecánicas distintas."""
+    trans, _ = _historia_paredes(["RIGHT", "DOWN"])
+    antes = trans[-1].after_frame
+    g = [f[:] for f in antes._grid]
+    g[12][12] = 7
+    despues = NS(_grid=g, level=1)
+    trans.append(NS(action="SPACE", before_frame=antes, after_frame=despues, result={}))
+    return trans, despues
+
+
+def test_informe_por_familia_y_cambio_no_predicho():
+    trans, actual = _historia_mixta()
+    r = check_model(_general, trans, actual)
+    assert r["by_family"] == {"arrows": [2, 2], "SPACE": [0, 1]}
+    m = r["mismatches"][0]
+    assert m["missed_changes"] == 1 and m["missed_example"] == (12, 12, 0, 7)
+    assert m["invented_changes"] == 0
+    texto = auto_check(_general, trans, actual)
+    assert "By action: SPACE 0/1, arrows 2/2" in texto
+    assert "real changes you did not predict, e.g. (12,12) went 0->7" in texto
+
+
+def test_cambio_inventado():
+    trans, actual = _historia_paredes(["RIGHT"])
+
+    def inventa(g, a):
+        d = _general(g, a) or {}
+        d[(12, 12)] = 5
+        return d
+    m = check_model(inventa, trans, actual)["mismatches"][0]
+    assert m["invented_changes"] == 1 and m["invented_example"] == (12, 12, 0, 5)
+
+
+def _observe(g):
+    r, c = next((r, c) for r in range(M) for c in range(M) if g[r][c] == 3)
+    return {"player": (r, c), "walls": sum(f.count(1) for f in g)}
+
+
+def _advance(s, a):
+    dr, dc = MOV.get(a, (0, 0))
+    r, c = s["player"]
+    return {"player": (r + dr, c + dc), "walls": s["walls"]}
+
+
+def test_check_state_por_campo():
+    trans, actual = _historia_paredes(["RIGHT", "DOWN", "LEFT"])
+    r = check_state(_observe, _advance, trans, actual)
+    assert r["all_ok"] and r["state_ok"] == 3 and r["blind"] == 0
+    assert r["fields"] == {"player": [3, 3], "walls": [3, 3]}
+
+    def mal(s, a):
+        n = _advance(s, a)
+        n["walls"] += 1
+        return n
+    r = check_state(_observe, mal, trans, actual)
+    assert r["fields"]["walls"] == [0, 3] and r["fields"]["player"] == [3, 3]
+    assert r["field_misses"]["walls"]["index"] == 0
+
+
+def test_check_state_punto_ciego_y_errores():
+    trans, actual = _historia_paredes(["RIGHT", "DOWN"])
+    ciego = check_state(lambda g: {"x": 1}, lambda s, a: s, trans, actual)
+    assert ciego["constant"] and not ciego["all_ok"] and ciego["blind"] == 2
+    assert ciego["blind_example"]["cells_changed"] == 2
+    texto = auto_check_state(lambda g: {"x": 1}, lambda s, a: s, trans, actual)
+    assert "captures nothing yet" in texto and "plan_with_state" not in texto and "2/2" not in texto
+    # parcialmente ciego: ve al jugador pero no un cambio extra
+    trans2, actual2 = _historia_mixta()
+    parcial = check_state(_observe, lambda s, a: _advance(s, a) if a != "SPACE" else s, trans2, actual2)
+    assert not parcial["constant"] and parcial["blind"] == 1
+
+    def lanza(g):
+        raise ValueError("boom")
+    r = check_state(lanza, _advance, trans, actual)
+    assert r["errors"] == 2 and "boom" in r["first_error"]["error"]
+    no_hash = check_state(lambda g: {"x": [{1, 2}, {"a": [1]}]}, lambda s, a: s, trans, actual)
+    assert no_hash["errors"] == 0  # listas, sets y dicts se congelan
+
+
+def test_auto_check_state_textos():
+    trans, actual = _historia_paredes(["RIGHT", "DOWN", "LEFT"])
+    ok = auto_check_state(_observe, _advance, trans, actual)
+    assert "3/3" in ok and "plan_with_state" in ok
+    nuevo = NS(_grid=_tablero_paredes((10, 10)), level=2)
+    assert "new level" in auto_check_state(_observe, _advance, trans, nuevo)
+    assert auto_check_state(_observe, _advance, [], actual) == ""
+    assert auto_check_state(None, None, trans, actual).startswith("[auto-check")  # errores, no lanza
+
+
+def test_plan_state():
+    _, actual = _historia_paredes(["RIGHT"])
+
+    def avanza(s, a):  # sin paredes en el modelo: el interior es 5..14
+        n = _advance(s, a)
+        r, c = n["player"]
+        return n if 5 <= r <= 14 and 5 <= c <= 14 else s
+    p = plan_state(_observe, avanza, lambda s: s["player"] == (12, 12), actual,
+                   ["UP", "DOWN", "LEFT", "RIGHT"])
+    assert p["length"] == 7
+    assert plan_state(_observe, avanza, lambda s: float("nan"), actual, ["UP"], max_nodes=30)["plan"] is None
+    assert "observe failed" in plan_state(lambda g: 1 / 0, avanza, lambda s: True, actual, ["UP"])["reason"]
+    assert plan_state(_observe, avanza, lambda s: True, actual, [])["reason"] == "no actions given"
+    tupla = plan_state(_observe, avanza, lambda s: s["player"][1] > 12 and s["player"], actual, ["RIGHT"])
+    assert tupla["length"] == 4  # una tupla vale por su verdad de Python
+    assert plan_state(_observe, avanza, lambda s: s.get("won"), actual, ["RIGHT"], max_nodes=20)["plan"] is None
+    dist = plan_state(_observe, avanza, lambda s: abs(s["player"][1] - 12), actual, ["RIGHT"])
+    assert dist["plan"] is None and "cost=True" in dist["reason"]
+    costo = plan_state(_observe, avanza, lambda s: abs(s["player"][0] - 12) + abs(s["player"][1] - 12),
+                       actual, ["UP", "DOWN", "LEFT", "RIGHT"], cost=True)
+    assert costo["length"] == 7 and costo["cost"] == 0
+    lejos = plan_state(_observe, avanza, lambda s: abs(s["player"][1] - 40) + 0.5, actual, ["RIGHT"], cost=True)
+    assert lejos["plan"] is None and lejos["best_cost"] == 26.5 and lejos["best_length"] == 5
+    assert "goal failed" in plan_state(_observe, avanza, lambda s: s["nada"], actual, ["UP"])["reason"]
+
+
+def test_campos_con_claves_no_texto():
+    trans, actual = _historia_paredes(["RIGHT"])
+    r = check_state(lambda g: {1: "a", "1": "b"}, lambda s, a: s, trans, actual)
+    assert set(r["fields"]) == {"1", "1:int"}
+
+
+def test_celdas_ambientales_no_son_punto_ciego():
+    # un reloj en (12,5) que cambia en cada transición, con acciones distintas
+    trans, actual = _historia_paredes(["RIGHT", "DOWN", "LEFT", "UP"])
+    for k, t in enumerate(trans):
+        for fr, v in ((t.before_frame, k % 2), (t.after_frame, (k + 1) % 2)):
+            fr._grid = [f[:] for f in fr._grid]
+            fr._grid[12][5] = 8 + v
+    r = check_state(_observe, _advance, trans, actual)
+    assert r["ambient_cells"] == 1 and r["blind"] == 0 and r["all_ok"]
+
+
+def test_state_shift_test_detecta_coordenadas_fijas():
+    g = _tablero_paredes((8, 8))
+    general = lambda g: {"player": next((r, c) for r in range(M) for c in range(M) if g[r][c] == 3)}  # noqa: E731
+    fijo = lambda g: {"player": (8, 8) if g[8][8] == 3 else None, "n": 1}  # noqa: E731
+    clavado = lambda g: {"player": (8, 8)}  # noqa: E731
+    assert state_shift_test(general, g) == []
+    assert state_shift_test(fijo, g) == ["player"]
+    assert state_shift_test(clavado, g) == ["player"]
+    assert state_shift_test(lambda g: 1 / 0, g) == []
+    paredes = lambda g: {"walls": frozenset((r, c) for r in range(M) for c in range(M) if g[r][c] == 1)}  # noqa: E731
+    assert state_shift_test(paredes, g) == []
+    fijas = lambda g: {"walls": frozenset((4, c) for c in range(4, 16))}  # noqa: E731
+    assert state_shift_test(fijas, g) == ["walls"]
+
+
+def test_nivel_nuevo_estado():
+    trans, _ = _historia_paredes(["RIGHT", "DOWN", "LEFT"])
+    nuevo = NS(_grid=_tablero_paredes((10, 10)), level=2)
+    assert "observe() reads this board" in auto_check_state(_observe, _advance, trans, nuevo)
+    sin_jugador = NS(_grid=[[0] * M for _ in range(M)], level=2)
+    assert "crashed" in auto_check_state(_observe, _advance, trans, sin_jugador)
+
+    def obs_vacia(g):
+        pos = [(r, c) for r in range(M) for c in range(M) if g[r][c] == 3]
+        return {"player": pos[0] if pos else None, "walls": sum(f.count(1) for f in g)}
+    assert "returns nothing for player" in auto_check_state(obs_vacia, _advance, trans, sin_jugador)
+
+    def obs_fija(g):  # lee el jugador solo en la fila 8, columnas 8..10 del nivel 1
+        for c in (8, 9, 10):
+            if g[8][c] == 3:
+                return {"player": (8, c), "walls": sum(f.count(1) for f in g)}
+        for c in (8, 9, 10):
+            if g[9][c] == 3:
+                return {"player": (9, c), "walls": sum(f.count(1) for f in g)}
+        return {"player": (8, 8), "walls": sum(f.count(1) for f in g)}
+    nuevo_fijo = NS(_grid=_tablero_paredes((8, 10)), level=2)
+    assert "fixed coordinates" in auto_check_state(obs_fija, _advance, trans, nuevo_fijo)
+
+
+def test_choques_sin_cambio_no_son_estado_vacio():
+    # Argon: un inicio con choques contra la pared (el tablero no cambia) no es "no captura nada"
+    trans, actual = _historia_paredes(["RIGHT"])
+    quieto = trans[-1].after_frame
+    for _ in range(2):
+        trans.append(NS(action="UP", before_frame=quieto, after_frame=quieto, result={}))
+    solo_choques = trans[1:]
+    r = check_state(_observe, lambda s, a: s, solo_choques, actual)
+    assert r["changed"] == 0 and not r["constant"] and r["all_ok"]
+
+
+def test_nombres_que_se_pierden():
+    codigo = "DIRS = {'UP': (-1, 0)}\nN = 3\nX: int = 2\ndef advance(s, a):\n    return s"
+    ns = {}
+    exec(compile("DIRS = {'UP': (-1, 0)}\nN = 3\n"
+                 "def advance(s, a):\n    d = DIRS[a]\n    return [x for x in range(N)]\n"
+                 "def observe(g):\n    return {}\n", "<python_tool>", "exec"), ns)
+    assert nombres_que_se_pierden([ns["advance"], ns["observe"]], codigo) == ["DIRS", "N"]
+    assert nombres_que_se_pierden([ns["observe"]], codigo) == []
+    assert nombres_que_se_pierden([ns["advance"]], "def advance(s, a):\n    return s") == []
+    assert nombres_que_se_pierden([None], "x = (") == []
+    ns2 = {}
+    exec(compile("x = 1\ndef obs(s):\n    return s.x\n", "<python_tool>", "exec"), ns2)
+    assert nombres_que_se_pierden([ns2["obs"]], "x = 1\ndef obs(s):\n    return s.x") == []  # atributo
 
 
 class PruebasSimulador(unittest.TestCase):

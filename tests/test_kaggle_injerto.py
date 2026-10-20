@@ -78,13 +78,24 @@ class InjertoEnHarness(unittest.TestCase):
             "print(repr(f(NS(_kept_functions={}))))\n"
             "print(repr(f(NS(_kept_functions={'step': 'def step(g, a): return g'}))))\n"
             "print(repr(f(None)))\n"
+            "a = NS(_kept_functions={'step': 'def step(g, a): return g'}, _vivos_paso=7)\n"
+            "for i in range(5):\n"
+            "    t = f(a)\n"
+            "print(repr(t))\n"
+            "a._vivos_paso = 8\n"
+            "print(repr(f(a)))\n"
         )
         env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "ARC3_PERSISTENT_FUNCTIONS")}
         env["PYTHONPATH"] = str(self.tmp / "ARC3-Inference")
         r = subprocess.run([sys.executable, "-c", codigo], capture_output=True, text=True, env=env,
                            timeout=120)
         self.assertEqual(r.returncode, 0, r.stderr[-2000:])
-        sin, con, nada = r.stdout.strip().splitlines()[-3:]
+        sin, con, nada, freno, quieto = r.stdout.strip().splitlines()[-5:]
+        # Freno apagado desde vivos-v4s (sospechoso de la caída de v3: 7 disparos en vc33 con un
+        # step perfecto); con 5 turnos sin jugar el recordatorio sigue siendo el normal.
+        self.assertNotIn("turns in a row without a single game action", freno)
+        self.assertIn("Your `step` simulator is retained", freno)
+        self.assertIn("Your `step` simulator is retained", quieto)  # hubo jugada: se resetea
         self.assertIn("No `step(grid, action)` simulator is retained yet", sin)
         self.assertIn("Your `step` simulator is retained", con)
         self.assertIn("No `step", nada)  # objeto sin atributos: no lanza
@@ -173,6 +184,96 @@ class InjertoEnHarness(unittest.TestCase):
             self.assertNotIn("dbg", o["stdout"], (nombre, o))
             self.assertEqual(o["acciones"], 0, (nombre, o))
             self.assertLess(o["seg"], 15, (nombre, o))
+
+    def test_modo_auto_estado_y_sin_repetir(self):
+        """v4: observe/advance se chequean solos; el mismo auto-chequeo dos veces se acorta."""
+        aplicar(self.tmp, SIMULADOR, auto=True)
+        vacio = [["." for _ in range(10)] for _ in range(10)]
+        a, b = [f[:] for f in vacio], [f[:] for f in vacio]
+        a[4][4] = "X"
+        b[4][5] = "X"
+        frame = lambda g: {"ascii": "\n".join("".join(f) for f in g), "step": 0, "level": 0,  # noqa: E731
+                           "shape": [10, 10], "grid": [[0] * 10 for _ in range(10)]}
+        estado = {"current_frame": frame(b), "valid_actions": ["RIGHT"],
+                  "history": [{"action": "", "frame": frame(a)},
+                              {"action": "RIGHT", "frame": frame(b), "result": {}}]}
+        obs = ("def observe(g):\n    return {'x': [r for r in range(10) for c in range(10) if g[r][c]=='X'][0],"
+               " 'y': [c for r in range(10) for c in range(10) if g[r][c]=='X'][0]}\n")
+        codigos = {
+            "bien": obs + "def advance(s, a):\n    return {'x': s['x'], 'y': s['y'] + 1}\nprint('hola')",
+            "mal": obs + "def advance(s, a):\n    return {'x': s['x'] + 1, 'y': s['y'] + 1}\nprint('hola')",
+            "propio": obs + "def advance(s, a):\n    return s\nprint(check_state(observe, advance)['checked'])",
+            "plan": obs + "def advance(s, a):\n    return {'x': s['x'], 'y': s['y'] + 1}\n"
+                    "print(plan_with_state(observe, advance, lambda s: s['y'] == 8, ['RIGHT'])['length'])",
+            "con_step": obs + "def advance(s, a):\n    return s\n"
+                        "def step(grid, action):\n    return {(4, 4): '.', (4, 5): 'X'}\nprint('hola')",
+            "constante": "DIRS = {'RIGHT': 1}\n" + obs + "def advance(s, a):\n    return {'x': s['x'], 'y': s['y'] + DIRS[a]}\nprint('hola')",
+            "constante_ajena": "OTRA = 5\n" + obs + "def advance(s, a):\n    return {'x': s['x'], 'y': s['y'] + 1}\nprint('hola')",
+            "except_pelado": obs + "def advance(s, a):\n    while True:\n        try:\n            sum(range(10**6))\n"
+                             "        except:\n            pass\nprint('hola')",
+        }
+        codigo = (
+            "import json\n"
+            "from types import SimpleNamespace as NS\n"
+            "from inference.agent import python_tool_sandbox as sb\n"
+            "from inference.agent import tool_agent as ta\n"
+            f"estado = {estado!r}\n"
+            "for nombre, code in " + repr(codigos) + ".items():\n"
+            "    out = sb.run_sandboxed_python(code=code, timeout_seconds=20, initial_state=estado,"
+            " action_handler=lambda *a, **k: {})\n"
+            "    print(nombre, json.dumps(out.get('stdout', '')))\n"
+            "ag = NS()\n"
+            "r1 = ta._vivos_no_repetir(ag, {'stdout': 'x\\n[auto-check of your step] 0/3'})\n"
+            "r2 = ta._vivos_no_repetir(ag, {'stdout': 'y\\n[auto-check of your step] 0/3\\n'})\n"
+            "r3 = ta._vivos_no_repetir(ag, {'stdout': 'z\\n[auto-check of your step] 1/3'})\n"
+            "r4 = ta._vivos_no_repetir(None, {'stdout': 'w'})\n"
+            "ta._vivos_no_repetir(ag, {'stdout': 'error sin auto-chequeo'})\n"
+            "r5 = ta._vivos_no_repetir(ag, {'stdout': 'z\\n[auto-check of your step] 1/3'})\n"
+            "ta._vivos_no_repetir(ag, {'stdout': 'a\\n[auto-check of your step] 3/3 It explains everything'})\n"
+            "r6 = ta._vivos_no_repetir(ag, {'stdout': 'b\\n[auto-check of your step] 3/3 It explains everything'})\n"
+            "print('no_acorta', json.dumps(r6['stdout']))\n"
+            "print('rep', json.dumps([r1['stdout'], r2['stdout'], r3['stdout'], r4['stdout'], r5['stdout']]))\n"
+            "print('envuelto', ta.run_sandboxed_python.__name__, ta.ToolAgent._run_python_tool.__name__)\n"
+            "vistos = []\n"
+            "def falso(**k):\n"
+            "    vistos.append(k['initial_state'].get('_vivos_modo'))\n"
+            "    return {'stdout': ''}\n"
+            "import inspect\n"
+            "_cl = inspect.getclosurevars(ta.run_sandboxed_python).nonlocals\n"
+            "ctx = _cl['_ctx']\n"
+            "ta.run_sandboxed_python.__closure__[[c.cell_contents is _cl['_orig_sandbox'] for c in ta.run_sandboxed_python.__closure__].index(True)].cell_contents = falso\n"
+            "ctx.agente = NS()\n"
+            "for code in ['def observe(g):\\n    return {}', 'action(\"UP\")', 'def step(g, a):\\n    return g', 'x = 1']:\n"
+            "    ta.run_sandboxed_python(code=code, initial_state={})\n"
+            "print('modos', json.dumps(vistos))\n"
+        )
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        env["PYTHONPATH"] = str(self.tmp / "ARC3-Inference")
+        r = subprocess.run([sys.executable, "-c", codigo], capture_output=True, text=True, env=env,
+                           timeout=180)
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+        salidas = dict(l.split(" ", 1) for l in r.stdout.strip().splitlines()[-12:])
+        self.assertIn("your functions use DIRS", salidas["constante"])
+        self.assertIn("predicts the next state in 1/1", salidas["constante"])
+        self.assertNotIn("Warning", salidas["constante_ajena"])
+        self.assertIn("explains everything", salidas["no_acorta"])  # lo que está bien no se acorta
+        self.assertIn("it reproduces 1/1", salidas["con_step"])
+        self.assertIn("hola", salidas["except_pelado"])
+        self.assertNotIn("plan_with_state(observe, advance, goal", salidas["plan"])
+        self.assertIn("predicts the next state in 1/1", salidas["bien"])
+        self.assertIn("hola", salidas["bien"])
+        self.assertIn("Field x 0/1", salidas["mal"])
+        self.assertNotIn("auto-check", salidas["propio"])
+        self.assertIn("3", salidas["plan"])
+        rep = json.loads(salidas["rep"])
+        self.assertIn("0/3", rep[0])
+        self.assertIn("UNCHANGED: your model still fails", rep[1])
+        self.assertNotIn("0/3", rep[1])
+        self.assertIn("1/3", rep[2])
+        self.assertEqual(rep[3], "w")
+        self.assertIn("1/3", rep[4])  # hubo un snippet sin auto-chequeo en el medio: no se acorta
+        self.assertEqual(salidas["envuelto"], "_sandbox _run_python_tool")
+        self.assertEqual(json.loads(salidas["modos"]), ["state", "state", "step", "step"])
 
     def test_harness_ajeno_no_lanza_ni_toca_el_prompt(self):
         prompts = self.agente / "prompts.py"
