@@ -44,7 +44,8 @@ Cada configuración se identifica por la huella de su notebook preparado
 | `--vivos` (herramientas descritas en el prompt) | be36c273659a |
 | `--vivos-auto` (auto-chequeo) | ff42d7f18a5a |
 | `vivos-v3` | 5e0b90762a34 |
-| `vivos-v4s` (rama `v4s`) | 413a0b289a64 |
+| `vivos-v4s` original (no entregada) | 413a0b289a64 |
+| `vivos-v4s` revisada (rama `v4s`) | 9d748dcf6c1a |
 
 Origen: notebook de Franzen con huella 4056fbfc69bb. Los puntajes están en
 `docs/mediciones.md`.
