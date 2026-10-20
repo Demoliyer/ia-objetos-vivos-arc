@@ -278,9 +278,9 @@ def _vivos_no_repetir(agente, res):
             return res
         mensaje = salida[i:].strip()
         if mensaje == getattr(agente, "_vivos_ultimo_auto", None) and "explains everything" not in mensaje:
-            res["stdout"] = salida[:i] + ("\\n[auto-check] UNCHANGED: your model still fails exactly "
-                                          "as after your previous snippet. Fix the failing part now, or "
-                                          "play actions directly without the model.\\n")
+            # texto neutral: el informe repetido puede ser positivo (2/2, transferencia entre
+            # niveles); decir "still fails" convertía un acierto en un fallo (revisión de Astra)
+            res["stdout"] = salida[:i] + "\\n[auto-check] UNCHANGED: same report as after your previous snippet.\\n"
         agente._vivos_ultimo_auto = mensaje
     except Exception:
         pass

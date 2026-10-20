@@ -608,3 +608,65 @@ del _nombre, _f  # si no, `_f` queda apuntando a la clase y unittest la corre do
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- Revisión de Astra (20-oct): tres defectos reproducidos y corregidos -----------------------
+
+_GRAFO = {("S", "a"): "A", ("A", "b"): "B", ("B", "c"): "X",
+          ("S", "d"): "C", ("C", "e"): "X", ("X", "f"): "G"}
+_COSTO = {"S": 10, "A": 1, "B": 1, "X": 1, "C": 5, "G": 0}
+_CODIGO = {"S": 1, "A": 2, "B": 3, "X": 4, "C": 5, "G": 6}
+_NOMBRE = {v: k for k, v in _CODIGO.items()}
+
+
+class PruebasRevisionAstra(unittest.TestCase):
+    def setUp(self):  # el presupuesto de tiempo del simulador es por proceso (ver PruebasSimulador)
+        import time as _time
+        from vivos import simulador
+        simulador._T0 = _time.monotonic()
+
+    def test_estado_vacio_con_jugador_que_se_mueve_no_explica_todo(self):
+        # El jugador cambia las mismas celdas en cada transición con acciones distintas: el
+        # filtro de celdas ambientales las descartaba y observe() -> {} salía "explica todo".
+        trans, actual = historia(["RIGHT", "LEFT", "RIGHT"])
+        r = check_state(lambda g: {}, lambda s, a: s, trans, actual)
+        self.assertTrue(r["constant"])
+        self.assertFalse(r["all_ok"])
+        self.assertIsNotNone(r["blind_example"])
+        texto = auto_check_state(lambda g: {}, lambda s, a: s, trans, actual)
+        self.assertIn("captures nothing", texto)
+        self.assertNotIn("explains everything", texto)
+
+    def test_estado_correcto_sigue_explicando_todo(self):
+        trans, actual = historia(["RIGHT", "LEFT", "RIGHT"])
+
+        def observe(g):
+            return {"p": next((r, c) for r in range(4, 8) for c in range(4, 8) if g[r][c] == 3)}
+
+        def advance(s, a):
+            dr, dc = MOV.get(a, (0, 0))
+            r, c = s["p"][0] + dr, s["p"][1] + dc
+            return {"p": (r, c) if 4 <= r < 8 and 4 <= c < 8 else s["p"]}
+
+        r = check_state(observe, advance, trans, actual)
+        self.assertTrue(r["all_ok"])
+        self.assertFalse(r["constant"])
+
+    def test_plan_estado_por_costo_reabre_estado_alcanzado_por_camino_mas_corto(self):
+        # S->A->B->X (barato) marca X a profundidad 3; S->C->X llega a profundidad 2 y X->G.
+        r = plan_state(lambda g: "S", lambda s, a: _GRAFO.get((s, a), s), lambda s: _COSTO[s],
+                       [[0]], list("abcdef"), max_depth=3, cost=True)
+        self.assertEqual(r["plan"], ["d", "e", "f"])
+
+    def test_plan_por_costo_reabre_estado_alcanzado_por_camino_mas_corto(self):
+        def grilla(nombre):
+            g = [[0] * N for _ in range(N)]
+            g[5][5] = _CODIGO[nombre]
+            return g
+
+        def step(g, a):
+            return grilla(_GRAFO.get((_NOMBRE[g[5][5]], a), _NOMBRE[g[5][5]]))
+
+        r = plan(step, lambda g: _COSTO[_NOMBRE[g[5][5]]], grilla("S"), list("abcdef"),
+                 max_depth=3, cost=True)
+        self.assertEqual(r["plan"], ["d", "e", "f"])

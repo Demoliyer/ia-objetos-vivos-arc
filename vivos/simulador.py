@@ -504,7 +504,9 @@ def _plan_por_costo(step, costo, inicio, acciones, interior, reloj, max_depth, m
     if costo_inicio <= 0:
         return {"plan": [], "length": 0, "explored": 0, "cost": costo_inicio}
     try:
-        vistos = {interior(inicio)}
+        # profundidad mínima conocida por estado: mejor-primero no llega primero por el camino
+        # más corto, así que un estado se reabre si aparece una ruta más corta (revisión de Astra)
+        vistos = {interior(inicio): 0}
     except Exception:
         return {"plan": None, "reason": "start board is not a valid grid"}
     frontera = [(costo_inicio, 0, 0, inicio, [])]
@@ -537,10 +539,12 @@ def _plan_por_costo(step, costo, inicio, acciones, interior, reloj, max_depth, m
                 continue
             finally:
                 reloj.medir(inicio_step)
-            if k in vistos:
+            if k in vistos and vistos[k] <= prof + 1:
                 continue
-            vistos.add(k)
-            explorados += 1
+            nuevo_estado = k not in vistos
+            vistos[k] = prof + 1
+            if nuevo_estado:
+                explorados += 1
             c = valor(h)
             if c is None:
                 errores += 1
@@ -601,7 +605,8 @@ def check_state(observe, advance, transitions, current_frame=None, *, include_al
     casos = _transiciones_del_nivel(transitions, current_frame, include_all_levels)
     informe = {"checked": 0, "state_ok": 0, "available": len(casos), "fields": {},
                "field_misses": {}, "blind": 0, "blind_example": None, "errors": 0,
-               "first_error": None, "changed": 0, "ambient_cells": 0}
+               "first_error": None, "changed": 0, "ambient_cells": 0,
+               "changed_raw": 0, "blind_raw": 0, "blind_raw_example": None}
     ambientales = _celdas_ambientales(casos, border)
     informe["ambient_cells"] = len(ambientales)
     for i, t in casos:
@@ -651,9 +656,22 @@ def check_state(observe, advance, transitions, current_frame=None, *, include_al
                                                 "before": _corto(s0), "actual": _corto(s1),
                                                 "predicted": _corto(pred)}
         dif = _diferencias(despues, antes, border)
-        reales = [d for d in (dif[0] if dif else []) if (d[0], d[1]) not in ambientales]
+        crudos = dif[0] if dif else []
+        reales = [d for d in crudos if (d[0], d[1]) not in ambientales]
         if reales:
             informe["changed"] += 1
+        # Sin filtrar: si el interior cambió y observe no, se cuenta aunque las celdas sean
+        # "ambientales". El filtro no puede habilitar "explica todo" con un estado que nunca
+        # cambió (revisión de Astra, 20-oct: observe() -> {} con un jugador que se mueve).
+        if crudos:
+            informe["changed_raw"] += 1
+            if c0 == c1:
+                informe["blind_raw"] += 1
+                if informe["blind_raw_example"] is None:
+                    r, c, nuevo, viejo = crudos[0]
+                    informe["blind_raw_example"] = {"index": i, "action": t.action, "cell": (r, c),
+                                                    "was": viejo, "became": nuevo,
+                                                    "cells_changed": len(crudos)}
         if c0 == c1:
             if reales:
                 dif = (reales, dif[1])
@@ -665,7 +683,9 @@ def check_state(observe, advance, transitions, current_frame=None, *, include_al
                                                 "cells_changed": len(dif[0])}
     n = informe["checked"]
     # estado constante: el tablero cambió y observe nunca vio nada (p. ej. devuelve {})
-    informe["constant"] = informe["changed"] > 0 and informe["blind"] == informe["changed"]
+    informe["constant"] = informe["changed_raw"] > 0 and informe["blind_raw"] == informe["changed_raw"]
+    if informe["constant"] and informe["blind_example"] is None:
+        informe["blind_example"] = informe["blind_raw_example"]
     informe["all_ok"] = n > 0 and informe["state_ok"] == n and not informe["constant"]
     return informe
 
@@ -833,7 +853,7 @@ def _plan_estado_por_costo(advance, costo, s0, k0, acciones, reloj, max_depth, m
         return {"plan": None, "reason": "cost=True: goal(state) did not return a finite number"}
     if c0 <= 0:
         return {"plan": [], "length": 0, "explored": 0, "cost": c0}
-    vistos = {k0}
+    vistos = {k0: 0}  # profundidad mínima por estado (ver _plan_por_costo)
     frontera = [(c0, 0, 0, s0, [])]
     mejor = (c0, [])
     explorados = errores = orden = 0
@@ -859,10 +879,12 @@ def _plan_estado_por_costo(advance, costo, s0, k0, acciones, reloj, max_depth, m
                 continue
             finally:
                 reloj.medir(inicio)
-            if k in vistos:
+            if k in vistos and vistos[k] <= prof + 1:
                 continue
-            vistos.add(k)
-            explorados += 1
+            nuevo_estado = k not in vistos
+            vistos[k] = prof + 1
+            if nuevo_estado:
+                explorados += 1
             c = _numero(costo, h)
             if c is None:
                 errores += 1
