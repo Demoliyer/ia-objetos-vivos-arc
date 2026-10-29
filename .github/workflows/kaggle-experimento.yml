@@ -1,0 +1,90 @@
+name: kaggle-experimento
+
+# Repo público: Actions sin costo. Corre kaggle/experimento.sh en la nube: baja el notebook de Franzen, lo
+# prepara, lo guarda en Kaggle en modo rápido y lo entrega a ARC Prize 2026 - ARC-AGI-3.
+#
+# Requiere en Settings → Secrets and variables → Actions:
+#   secret   KAGGLE_API_TOKEN  (el token de kaggle.com → Settings → API)
+#   variable KAGGLE_USERNAME   (tu usuario de Kaggle)
+#
+# Lanzar: pestaña Actions → kaggle-experimento → Run workflow, o
+#   gh workflow run kaggle-experimento.yml -f nombre=vivos -f args=--vivos  (base: -f nombre=base -f args=-)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Rama o commit con el código
+        default: v4f
+      nombre:
+        description: Nombre corto del experimento
+        default: vivos
+      args:
+        description: Opciones de experimento.sh (p. ej. "--vivos" o "ARC3_X=1"); vacío o "-" = base sin cambios
+        default: ""
+        required: false
+      sin_entregar:
+        description: Solo guardar en Kaggle, sin entregar
+        type: boolean
+        default: false
+      acelerador:
+        description: Forzar acelerador del push (vacío = el de los metadatos de Franzen)
+        default: ""
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kaggle-experimento  # nunca dos entregas a la vez
+  cancel-in-progress: false
+
+jobs:
+  experimento:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300  # prácticas de 25 juegos: espera de servidor + 45 min + cierre pasan de 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Preparar el kit de Kaggle donde lo espera experimento.sh
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KAGGLE_USERNAME: ${{ vars.KAGGLE_USERNAME }}
+        run: |
+          set -euo pipefail
+          [ -n "$KAGGLE_API_TOKEN" ] || { echo "::error::Falta el secret KAGGLE_API_TOKEN"; exit 1; }
+          [ -n "$KAGGLE_USERNAME" ] || { echo "::error::Falta la variable KAGGLE_USERNAME"; exit 1; }
+          python -m venv kaggle/kit/.venv
+          kaggle/kit/.venv/bin/pip install --quiet "kaggle==2.2.4"
+          mkdir -p kaggle/kit/.kaggle
+          umask 077
+          printf '%s' "$KAGGLE_API_TOKEN" > kaggle/kit/.kaggle/access_token
+          printf '%s\n' "$KAGGLE_USERNAME" > kaggle/usuario.txt
+      - name: Experimento
+        env:
+          SIN_ENTREGAR: ${{ inputs.sin_entregar && '1' || '' }}
+          ACELERADOR: ${{ inputs.acelerador }}
+          ARGS: ${{ inputs.args }}
+          NOMBRE: ${{ inputs.nombre }}
+        run: |
+          set -euo pipefail
+          # ARGS se parte por espacios a propósito (lista de opciones); sin comillas en el uso.
+          # GitHub reemplaza un input vacío por su default; "-" fuerza "sin opciones" pase lo que pase.
+          [ "$ARGS" = "-" ] && ARGS=""
+          read -r -a OPCIONES <<< "$ARGS"
+          echo "::notice title=opciones::nombre=$NOMBRE args=[${ARGS}]"
+          # Las anotaciones (::notice/::error) se leen por la API de checks aunque los logs no.
+          set +e
+          bash kaggle/experimento.sh "$NOMBRE" ${OPCIONES[@]+"${OPCIONES[@]}"} 2>&1 | tee salida.log
+          RC=${PIPESTATUS[0]}
+          set -e
+          RESUMEN=$(grep -E "^== |Kernel version|has status|Entregado|Guardado sin entregar|Falló|No se pudo|machine_shape" salida.log | tail -15 | tr '\n' ' ' | cut -c1-1000)
+          if [ "$RC" = 0 ]; then echo "::notice title=kaggle-experimento::$RESUMEN"; else echo "::error title=kaggle-experimento::$RESUMEN"; fi
+          exit "$RC"
+      - name: Borrar credenciales
+        if: always()
+        run: rm -f kaggle/kit/.kaggle/access_token kaggle/usuario.txt

@@ -1,0 +1,103 @@
+name: kaggle-estado
+
+# Corre un comando de solo lectura del CLI de Kaggle (por defecto: las entregas de ARC Prize
+# 2026 - ARC-AGI-3) y publica la salida como anotación (legible por la API de checks).
+# Usa el secret KAGGLE_API_TOKEN de kaggle-experimento.
+
+on:
+  workflow_dispatch:
+    inputs:
+      comando:
+        description: Subcomando del CLI de kaggle (solo lectura)
+        default: competitions submissions arc-prize-2026-arc-agi-3
+      buscar:
+        description: "Solo con 'competitions leaderboard': nombre de equipo a ubicar en la tabla completa"
+        default: ""
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  estado:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          sparse-checkout: kaggle/analizar_salida.py
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Consulta
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          COMANDO: ${{ inputs.comando }}
+          BUSCAR: ${{ inputs.buscar }}
+        run: |
+          set -uo pipefail
+          [ -n "$KAGGLE_API_TOKEN" ] || { echo "::error::Falta el secret KAGGLE_API_TOKEN"; exit 1; }
+          pip install --quiet "kaggle==2.2.4"
+          read -r -a ARGS <<< "$COMANDO"
+          case "${ARGS[0]:-} ${ARGS[1]:-}" in
+            "competitions submissions"|"competitions leaderboard"|"kernels status"|"kernels list"|"config view"|"cuota ") ;;
+            *) echo "::error::Comando no permitido: $COMANDO"; exit 1 ;;
+          esac
+          if [ "${ARGS[0]}" = "cuota" ]; then
+            # Cuota semanal de GPU/TPU de la cuenta (solo lectura).
+            RESUMEN=$(python3 - <<'PY' 2>&1 | tr '\n' '|'
+          from kaggle.api.kaggle_api_extended import KaggleApi
+          from kagglesdk.kernels.types.kernels_api_service import ApiGetAcceleratorQuotaStatisticsRequest
+          api = KaggleApi(); api.authenticate()
+          with api.build_kaggle_client() as k:
+              r = k.kernels.kernels_api_client.get_accelerator_quota_statistics(ApiGetAcceleratorQuotaStatisticsRequest())
+          def h(td): return "?" if td is None else f"{td.total_seconds() / 3600:.1f} h"
+          print(f"renueva {r.quota_refresh_time}")
+          for nombre, q in (("GPU", r.gpu_quota), ("TPU", r.tpu_quota)):
+              if q is not None:
+                  print(f"{nombre}: usado {h(q.time_used)}, reservado {h(q.time_reserved)}, total {h(q.total_time_allowed)}")
+          PY
+          )
+            RC=0
+          elif [ "${ARGS[0]} ${ARGS[1]}" = "competitions leaderboard" ] && [ -n "$BUSCAR" ]; then
+            # Tabla completa descargada: posición del equipo buscado y total de equipos.
+            kaggle competitions leaderboard "${ARGS[2]}" -d -p tabla > salida.txt 2>&1
+            RC=$?
+            (cd tabla && unzip -o -q ./*.zip) || true
+            RESUMEN=$(python3 - "$BUSCAR" tabla <<'PY'
+          import csv, glob, sys
+          buscar, d = sys.argv[1].lower(), sys.argv[2]
+          f = sorted(glob.glob(d + "/*.csv"))
+          if not f:
+              print("no se pudo leer la tabla"); sys.exit()
+          filas = list(csv.DictReader(open(f[0], encoding="utf-8")))
+          col = next((c for c in filas[0] if "score" in c.lower()), None) if filas else None
+          filas.sort(key=lambda r: -float(r[col] or 0))
+          total = len(filas)
+          hallados = [(i + 1, r) for i, r in enumerate(filas) if buscar in (r.get("TeamName") or "").lower()
+                      or buscar in (r.get("TeamMemberUserNames") or "").lower()]
+          puntos = sorted(float(r[col] or 0) for r in filas)
+          def pct(q): return puntos[int(q * (total - 1))]
+          print(f"equipos {total}; mediana {pct(0.5):.2f}; p75 {pct(0.75):.2f}; p90 {pct(0.9):.2f}; top10 {sorted(puntos)[-10]:.2f}")
+          for pos, r in hallados[:5]:
+              print(f"posicion {pos}/{total} ({100 * pos / total:.0f} % superior): {r.get('TeamName')} {r[col]}")
+          if not hallados:
+              print("equipo no encontrado")
+          PY
+          )
+          RESUMEN=$(printf '%s' "$RESUMEN" | tr '\n' '|')
+          elif [ "${ARGS[0]} ${ARGS[1]}" = "kernels output" ]; then
+            # Descarga a un directorio fijo y resume archivos + uso de check_model/plan_with_model.
+            kaggle "${ARGS[@]}" -p salida_kernel > salida.txt 2>&1
+            RC=$?
+            tail -5 salida.txt
+            RESUMEN=$(python kaggle/analizar_salida.py salida_kernel 2>&1 | tr '\n' ' ' | cut -c1-3800)
+          else
+            kaggle "${ARGS[@]}" > salida.txt 2>&1
+            RC=$?
+            cat salida.txt
+            RESUMEN=$(head -40 salida.txt | tr '\n' '|' | cut -c1-3800)
+          fi
+          echo "::notice title=kaggle ${COMANDO}::rc=$RC | $RESUMEN"
