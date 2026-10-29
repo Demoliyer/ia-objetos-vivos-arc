@@ -100,6 +100,34 @@ class InjertoEnHarness(unittest.TestCase):
         self.assertIn("Your `step` simulator is retained", con)
         self.assertIn("No `step", nada)  # objeto sin atributos: no lanza
 
+    def test_candidata_f_aviso_de_hipotesis_una_vez_por_nivel(self):
+        aplicar(self.tmp, SIMULADOR, fuerte=True)
+        codigo = (
+            "from types import SimpleNamespace as NS\n"
+            "from inference.agent.tool_agent import ToolAgent\n"
+            "f = ToolAgent._retained_function_context\n"
+            "def h(a):\n"
+            "    return 'Hypothesis check' in f(a)\n"
+            "a = NS(_kept_functions={}, _vivos_nivel=2, _vivos_paso=20, _death_ledger_attempts=[])\n"
+            "r = [h(a)]\n"                       # inicio del nivel: no
+            "a._vivos_paso = 83; r.append(h(a))\n"  # 63 acciones: no
+            "a._vivos_paso = 84; r.append(h(a))\n"  # 64: sí
+            "a._vivos_paso = 200; r.append(h(a))\n"  # una sola vez por nivel
+            "a._vivos_nivel = 3; a._vivos_paso = 210; r.append(h(a))\n"  # nivel nuevo: no
+            "a._death_ledger_attempts = [{'ids': [1]}]; r.append(h(a))\n"  # murió en el nivel: sí
+            "r.append(h(a))\n"
+            "b = NS(_kept_functions={})\n"  # sin nivel ni paso: nunca, sin lanzar
+            "r.append(h(b))\n"
+            "print(r)\n"
+        )
+        env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "ARC3_PERSISTENT_FUNCTIONS")}
+        env["PYTHONPATH"] = str(self.tmp / "ARC3-Inference")
+        r = subprocess.run([sys.executable, "-c", codigo], capture_output=True, text=True, env=env,
+                           timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+        self.assertEqual(r.stdout.strip().splitlines()[-1],
+                         "[False, False, True, False, False, True, False, False]")
+
     def test_modo_auto_chequea_el_step_despues_del_snippet(self):
         self.assertIn("auto-chequeo", aplicar(self.tmp, SIMULADOR, auto=True))
         py_compile.compile(str(self.agente / "python_tool_sandbox.py"), doraise=True)
@@ -296,9 +324,10 @@ class PrepararNotebook(unittest.TestCase):
     def test_orden_de_celdas_con_vivos(self):
         out = preparar(copy.deepcopy(self.nb), {"ARC3_X": "1"}, rapido=True, vivos=True)
         i = self._indice_env(out)
-        self.assertEqual(len(out["cells"]), len(self.nb["cells"]) + 2)
+        self.assertEqual(len(out["cells"]), len(self.nb["cells"]) + 3)
         self.assertIn("nvidia-smi", _texto(out["cells"][i + 1]))
-        self.assertIn("aplicar(BUNDLE_DIR", _texto(out["cells"][i + 2]))
+        self.assertIn("aplicar(BUNDLE_DIR / 'src', _VIVOS_SRC", _texto(out["cells"][i + 2]))
+        self.assertIn("_vivos_guarda_arranque", _texto(out["cells"][i + 3]))
         self.assertIn("setup_env['ARC3_X'] = '1'", _texto(out["cells"][i]))
         self.assertTrue(out["metadata"]["kaggle"]["isGpuEnabled"])
         self.assertFalse(out["metadata"]["kaggle"]["isInternetEnabled"])
@@ -309,9 +338,17 @@ class PrepararNotebook(unittest.TestCase):
         self.assertIn("if COMMIT_RAPIDO and not TRUE_SUBMISSION:", config)
         self.assertIn("if not TRUE_SUBMISSION:", CELDA_GPU)
 
+    @staticmethod
+    def _sin_arranque(nb):
+        """La guarda de arranque es la única celda que se agrega en los dos modos."""
+        nb["cells"] = [c for c in nb["cells"] if "_vivos_guarda_arranque" not in _texto(c)]
+        return nb
+
     def test_completo_solo_cambia_variables(self):
         out = preparar(copy.deepcopy(self.nb), {"ARC3_X": "1"}, rapido=False, vivos=False)
-        self.assertEqual(len(out["cells"]), len(self.nb["cells"]))
+        self.assertEqual(len(out["cells"]), len(self.nb["cells"]) + 1)
+        self.assertIn("_vivos_guarda_arranque", _texto(out["cells"][self._indice_env(out) + 1]))
+        out = self._sin_arranque(out)
         textos = [_texto(c) for c in out["cells"]]
         self.assertFalse(any("COMMIT_RAPIDO" in t or "Objetos Vivos: en el guardado" in t for t in textos))
         originales = [_texto(c) for c in self.nb["cells"]]
@@ -321,6 +358,7 @@ class PrepararNotebook(unittest.TestCase):
     def test_cfg_cambia_solo_las_claves_pedidas(self):
         out = preparar(copy.deepcopy(self.nb), {}, rapido=False, vivos=False,
                        cfg={"MAXREQ": "14", "MAMBA_CACHE": "84"})
+        out = self._sin_arranque(out)
         textos = [_texto(c) for c in out["cells"]]
         originales = [_texto(c) for c in self.nb["cells"]]
         distintas = [i for i, (a, b) in enumerate(zip(originales, textos)) if a != b]
@@ -361,3 +399,114 @@ class PrepararNotebook(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+MOTOR = {n: (RAIZ / "vivos" / f"{n}.py").read_text(encoding="utf-8")
+         for n in ("motor_puro", "percepcion", "mundo", "motor_llm")}
+
+
+@unittest.skipUnless(HARNESS.is_dir(), "falta el harness de Franzen")
+class CandidataM(unittest.TestCase):
+    """El motor aprende en el host, el modelo recibe engine_step en el sandbox real."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="vivos_motor_"))
+        shutil.copytree(HARNESS, self.tmp / "ARC3-Inference")
+        self.agente = self.tmp / "ARC3-Inference" / "inference" / "agent"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_motor_de_punta_a_punta(self):
+        r = aplicar(self.tmp, SIMULADOR, auto=True, motor=MOTOR)
+        self.assertIn("motor (candidata M)", r)
+        for nombre in ("python_tool_sandbox.py", "tool_agent.py", "prompts.py"):
+            py_compile.compile(str(self.agente / nombre), doraise=True)
+        self.assertIn("[Engine] Without spending actions", (self.agente / "tool_agent.py").read_text(encoding="utf-8"))
+        codigo = (
+            "import json\n"
+            "from inference.agent import python_tool_sandbox as sb, tool_agent as ta\n"
+            "assert ta._VIVOS_MOTOR is not None\n"
+            "def frame(xr, lv=1):\n"
+            "    g = [['B'] * 64 for _ in range(64)]\n"
+            "    for y in (20, 21):\n"
+            "        for x in (xr, xr + 1):\n"
+            "            g[y][x] = 'R'\n"
+            "    return {'ascii': '\\n'.join(''.join(f) for f in g), 'step': 0, 'level': lv, 'shape': [64, 64],"
+            " 'grid': [[0] * 64 for _ in range(64)]}\n"
+            "hist = [{'action': '', 'frame': frame(5)}] + [{'action': 'RIGHT', 'frame': frame(5 + 3 * i), 'result': {}}"
+            " for i in range(1, 9)]\n"
+            "estado = {'current_frame': hist[-1]['frame'], 'history': hist, 'valid_actions': ['RIGHT']}\n"
+            "class NS: pass\n"
+            "ag = NS()\n"
+            "k = {'initial_state': estado}\n"
+            "ta._vivos_motor_estado(ag, k)\n"
+            "print('stats', json.dumps(ag._vivos_motor_stats))\n"
+            "code = ('r = check_model(engine_step)\\n'\n"
+            "        'print(\"chk\", r[\"checked\"], r[\"all_interior_ok\"])\\n'\n"
+            "        'p = plan_with_model(engine_step, lambda g: g[20][44] == \"R\", [\"RIGHT\"])\\n'\n"
+            "        'print(\"plan\", p.get(\"length\"))')\n"
+            "out = sb.run_sandboxed_python(code=code, timeout_seconds=30, initial_state=k['initial_state'],"
+            " action_handler=lambda *a, **kw: {})\n"
+            "print('sandbox', json.dumps(out.get('stdout', '') + str(out.get('error') or '')))\n"
+            "out2 = sb.run_sandboxed_python(code='print(\"engine_step\" in dir())', timeout_seconds=30,"
+            " initial_state=estado, action_handler=lambda *a, **kw: {})\n"
+            "print('sin_motor', json.dumps(out2.get('stdout', '')))\n"
+            "k3 = {'initial_state': dict(estado, current_frame=frame(5, lv=2))}\n"
+            "ag3 = NS(); ta._vivos_motor_estado(ag3, k3)\n"
+            "print('otro_nivel', json.dumps('_vivos_motor' in k3['initial_state']))\n"
+            "ta._vivos_motor_estado(None, {'initial_state': 3})\n"
+            "import sys as _s\n"
+            "print('cache', _s.modules['vivos_motor.percepcion']._CACHE_SEG_MAX)\n"
+            "f = NS(); f._kept_functions = {}; f._vivos_nivel = 1; f._vivos_motor_stats = (1, 5, 5); f._vivos_motor_datos = {}\n"
+            "a1 = ta.ToolAgent._retained_function_context(f); a2 = ta.ToolAgent._retained_function_context(f)\n"
+            "f._vivos_nivel = 2; f._vivos_motor_stats = (2, 4, 4)\n"
+            "a3 = ta.ToolAgent._retained_function_context(f)\n"
+            "print('aviso', json.dumps(['[Engine]' in a1, '[Engine]' in a2, '[Engine]' in a3, 'hypothesis' in a1]))\n"
+            "ta._vivos_motor_registro(ag, 'r = check_model(engine_step)\\np = plan_with_model(engine_step, g, a)',"
+            " {'stdout': '', 'action_results': [{}, {}]})\n"
+            "print('cont', json.dumps(ta._VIVOS_MOTOR.CONTADORES))\n"
+            "o1 = sb.run_sandboxed_python(code='print(1)', timeout_seconds=30, initial_state=k['initial_state'],"
+            " action_handler=lambda *a, **kw: {})\n"
+            "print('tira', json.dumps(o1.get('stdout', '')))\n"
+            "ag._vivos_engine_auto_nivel = None\n"
+            "r1 = dict(o1); ta._vivos_motor_registro(ag, 'print(1)', r1)\n"
+            "r2 = dict(o1); ta._vivos_motor_registro(ag, 'print(1)', r2)\n"
+            "print('una_vez', json.dumps(['engine rule reproduces' in r1['stdout'], 'engine rule reproduces' in r2['stdout'], r2['stdout']]))\n"
+            "o2 = sb.run_sandboxed_python(code='r = check_model(engine_step)', timeout_seconds=30,"
+            " initial_state=k['initial_state'], action_handler=lambda *a, **kw: {})\n"
+            "print('usa', json.dumps(o2.get('stdout', '')))\n"
+        )
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        env["PYTHONPATH"] = str(self.tmp / "ARC3-Inference")
+        r = subprocess.run([sys.executable, "-c", codigo], capture_output=True, text=True, env=env,
+                           timeout=300)
+        self.assertEqual(r.returncode, 0, r.stderr[-3000:])
+        salidas = dict(l.split(" ", 1) for l in r.stdout.strip().splitlines() if " " in l)
+        nivel, ok, n = json.loads(salidas["stats"])
+        self.assertEqual(nivel, 1)
+        self.assertGreaterEqual(n, 3)
+        self.assertEqual(ok, n)
+        sb_out = json.loads(salidas["sandbox"])
+        self.assertIn("chk 8 True", sb_out)
+        self.assertRegex(sb_out, r"plan \d+")
+        self.assertIn("False", json.loads(salidas["sin_motor"]))
+        self.assertEqual(json.loads(salidas["otro_nivel"]), False)
+        self.assertEqual(salidas["cache"].strip(), "256")
+        self.assertEqual(json.loads(salidas["aviso"]), [True, False, True, True])  # una vez por nivel
+        cont = json.loads(salidas["cont"])
+        self.assertEqual(cont.get("check_model_engine"), 1)
+        self.assertEqual(cont.get("acciones_tras_plan_engine"), 2)
+        self.assertGreaterEqual(cont.get("motor_offered", 0), 1)
+        self.assertIn("[auto-check of engine_step] the engine rule reproduces 8/8", json.loads(salidas["tira"]))
+        una = json.loads(salidas["una_vez"])
+        self.assertEqual(una[:2], [True, False])  # una vez por nivel; el resto de la salida queda
+        self.assertIn("1", una[2])
+        self.assertNotIn("auto-check of engine_step", json.loads(salidas["usa"]))  # ya la usó
+
+    def test_sin_motor_el_injerto_no_cambia(self):
+        aplicar(self.tmp, SIMULADOR, auto=True)
+        a = (self.agente / "tool_agent.py").read_text(encoding="utf-8")
+        self.assertIn("_VIVOS_MOTOR_FUENTES = {}", a)
+        s = (self.agente / "python_tool_sandbox.py").read_text(encoding="utf-8")
+        self.assertIn("_VIVOS_MOTOR_SRC = ''", s)

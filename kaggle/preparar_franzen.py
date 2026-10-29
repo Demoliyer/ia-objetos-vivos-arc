@@ -39,14 +39,35 @@ JUEGOS_PUBLICOS = [
 JUEGOS_RAPIDOS = ["ls20", "ft09"]
 MINUTOS_RAPIDOS = 15
 
+# Práctica (--minutos dado): esperar al servidor del modelo antes de fijar el presupuesto, para que
+# los minutos de juego no dependan de lo que tarde Kaggle en cargar los pesos (24-oct: 13-18 min
+# de una práctica de 45 se fueron esperando). El servidor se lanza en una celda anterior (Popen).
+ESPERA_SERVIDOR = '''
+    import urllib.request as _url
+    _base = os.environ.get("LOCAL_ANALYZER_BASE_URL", "").strip().rstrip("/")
+    _raiz = _base[:-3] if _base.endswith("/v1") else _base
+    _t0 = time.time()
+    while _raiz and time.time() - _t0 < 5400:
+        try:
+            with _url.urlopen(_raiz + "/health", timeout=5) as _r:
+                if 200 <= int(getattr(_r, "status", 200)) < 300:
+                    break
+        except Exception:
+            pass
+        time.sleep(15)
+    print(f"objetos_vivos: práctica, servidor listo tras {time.time() - _t0:.0f} s de espera")
+'''
+
+
 def bloque_rapido(juegos: list[str] | None = None, minutos: int | None = None) -> str:
     """Bloque del guardado rápido. No afecta la re-ejecución oficial (TRUE_SUBMISSION)."""
+    espera = ESPERA_SERVIDOR if minutos else ""
     juegos = juegos or JUEGOS_RAPIDOS
     minutos = minutos or MINUTOS_RAPIDOS
     return f'''
 # --- Objetos Vivos: guardado rápido (no afecta la re-ejecución oficial) ---
 COMMIT_RAPIDO = True
-if COMMIT_RAPIDO and not TRUE_SUBMISSION:
+if COMMIT_RAPIDO and not TRUE_SUBMISSION:{espera}
     demo_excluded_games = {[j for j in JUEGOS_PUBLICOS if j not in juegos]!r}
     bm.n_passes = 1
     bm.solver.concurrency = {len(juegos)}
@@ -91,14 +112,31 @@ def _celda(texto: str) -> dict:
             "source": texto.splitlines(keepends=True)}
 
 
-def _celda_vivos(fuerte: bool = False, auto: bool = False) -> dict:
-    """Celda que injerta check_model / plan_with_model (kaggle/injerto_vivos.py) en el harness."""
+def _celda_vivos(fuerte: bool = False, auto: bool = False, motor: bool = False) -> dict:
+    """Celda que injerta check_model / plan_with_model (kaggle/injerto_vivos.py) en el harness.
+    motor=True agrega el motor de Objetos Vivos (candidata M; requiere auto)."""
     raiz = Path(__file__).resolve().parent
     injerto = (raiz / "injerto_vivos.py").read_text(encoding="utf-8")
     simulador = (raiz.parent / "vivos" / "simulador.py").read_text(encoding="utf-8")
-    texto = (injerto + "\n\n_VIVOS_SRC = " + repr(simulador) + "\n"
-             f"print(aplicar(BUNDLE_DIR / 'src', _VIVOS_SRC, fuerte={fuerte!r}, auto={auto!r}))\n")
+    if motor:
+        fuentes = {n: (raiz.parent / "vivos" / f"{n}.py").read_text(encoding="utf-8")
+                   for n in ("motor_puro", "percepcion", "mundo", "motor_llm")}
+        texto = (injerto + "\n\n_VIVOS_SRC = " + repr(simulador) + "\n_VIVOS_MOTOR = " + repr(fuentes) + "\n"
+                 f"print(aplicar(BUNDLE_DIR / 'src', _VIVOS_SRC, fuerte={fuerte!r}, auto={auto!r}, "
+                 "motor=_VIVOS_MOTOR))\n")
+    else:
+        texto = (injerto + "\n\n_VIVOS_SRC = " + repr(simulador) + "\n"
+                 f"print(aplicar(BUNDLE_DIR / 'src', _VIVOS_SRC, fuerte={fuerte!r}, auto={auto!r}))\n")
     compile(texto, "<celda_vivos>", "exec")
+    return _celda(texto)
+
+
+def _celda_arranque() -> dict:
+    """Guarda de arranque (kaggle/guarda_arranque.py): en los dos modos, porque protege la corrida
+    oficial de la carga lenta del modelo en Kaggle (oct-2026)."""
+    texto = ((Path(__file__).resolve().parent / "guarda_arranque.py").read_text(encoding="utf-8")
+             + "\nprint(aplicar(BUNDLE_DIR / 'src'))\n")
+    compile(texto, "<celda_arranque>", "exec")
     return _celda(texto)
 
 
@@ -130,7 +168,7 @@ def _cambiar_cfg(nb: dict, cfg: dict[str, str]) -> None:
 def preparar(nb: dict, envs: dict[str, str], rapido: bool, vivos: bool = False, fuerte: bool = False,
              auto: bool = False,
              cfg: dict[str, str] | None = None, juegos: list[str] | None = None,
-             minutos: int | None = None) -> dict:
+             minutos: int | None = None, motor: bool = False) -> dict:
     if juegos and (bad := [j for j in juegos if j not in JUEGOS_PUBLICOS]):
         sys.exit(f"juegos desconocidos: {bad}")
     if cfg:
@@ -151,8 +189,10 @@ def preparar(nb: dict, envs: dict[str, str], rapido: bool, vivos: bool = False, 
         _poner(con_config[0], texto)
     fuerte = fuerte or auto
     vivos = vivos or fuerte
+    # Guarda de arranque: siempre (también en la corrida oficial), después del parche de Franzen.
+    nb["cells"].insert(nb["cells"].index(con_env[0]) + 1, _celda_arranque())
     if vivos:  # justo después de aplicar el parche de Franzen, antes de importar el harness
-        nb["cells"].insert(nb["cells"].index(con_env[0]) + 1, _celda_vivos(fuerte, auto))
+        nb["cells"].insert(nb["cells"].index(con_env[0]) + 1, _celda_vivos(fuerte, auto, motor and auto))
     if rapido:  # antes de cargar nada pesado
         nb["cells"].insert(nb["cells"].index(con_env[0]) + 1, _celda(CELDA_GPU))
     # El notebook de Franzen marca isGpuEnabled=False aunque usa la RTX PRO 6000.
@@ -178,6 +218,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="--vivos + recordatorio por turno para que el modelo use check_model")
     p.add_argument("--vivos-auto", action="store_true",
                    help="--vivos-fuerte + auto-chequeo del step después de cada snippet")
+    p.add_argument("--motor", action="store_true",
+                   help="con --vivos-auto: el motor de Objetos Vivos ofrece sus reglas (candidata M)")
     p.add_argument("--cfg", action="append", default=[], metavar="CLAVE=VALOR",
                    help="cambia CFG del servidor (p. ej. MAXREQ=14); también en la corrida oficial")
     p.add_argument("--juegos", help="guardado rápido: juegos separados por coma")
@@ -197,7 +239,8 @@ def main(argv: list[str] | None = None) -> int:
         k, v = par.split("=", 1)
         envs[k.strip()] = v.strip()
     nb = preparar(json.loads(a.entrada.read_text(encoding="utf-8")), envs, rapido=not a.completo,
-                   vivos=a.vivos, fuerte=a.vivos_fuerte, auto=a.vivos_auto, cfg=cfg, juegos=juegos, minutos=a.minutos)
+                   vivos=a.vivos, fuerte=a.vivos_fuerte, auto=a.vivos_auto, cfg=cfg, juegos=juegos, minutos=a.minutos,
+                   motor=a.motor)
     a.salida.parent.mkdir(parents=True, exist_ok=True)
     a.salida.write_text(json.dumps(nb, ensure_ascii=False, indent=1), encoding="utf-8")
     modo = ("completo (9 h)" if a.completo else

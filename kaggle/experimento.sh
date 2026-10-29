@@ -50,6 +50,7 @@ for par in "$@"; do
     --vivos) ENVS+=(--vivos) ;;
     --vivos-fuerte) ENVS+=(--vivos-fuerte) ;;
     --vivos-auto) ENVS+=(--vivos-auto) ;;
+    --motor) ENVS+=(--motor) ;;                           # candidata M: motor de Objetos Vivos
     --juegos=*) ENVS+=(--juegos "${par#--juegos=}") ;;    # solo el guardado rápido
     --minutos=*) ENVS+=(--minutos "${par#--minutos=}") ;;  # solo el guardado rápido
     cfg.*=*) ENVS+=(--cfg "${par#cfg.}") ;;                # CFG del servidor (también la oficial)
@@ -141,6 +142,33 @@ done
 
 if [ -n "${SIN_ENTREGAR:-}" ]; then
   echo "Guardado sin entregar: https://www.kaggle.com/code/$USUARIO/$SLUG"; exit 0
+fi
+
+# Guarda de salud (22-oct): F-1 dio 0,00 en el oculto y su guardado rápido nunca levantó el
+# servidor del modelo (la C cancelada, corriendo al mismo tiempo, tampoco). Si el servidor no
+# arrancó en el guardado rápido, la máquina o los datos de Kaggle están fallando en ese momento:
+# no se entrega (se pierde el día, no una muestra con un 0 de infraestructura).
+SALUD=$(mktemp -d)
+"$K" kernels output "$USUARIO/$SLUG" -p "$SALUD" --file-pattern '^serve\.log$' -q >/dev/null 2>&1 || true
+# Matiz (24-oct): con la carga lenta de Kaggle (~45-50 min) el guardado rápido (15 min por juego)
+# termina con el servidor aún cargando pesos, sin que nada esté roto: F-3 y F-3b (v42, v43) dieron
+# exit 3 por eso. La guarda de arranque ya espera al servidor hasta 2 h en la corrida oficial. Por
+# eso solo se frena si serve.log muestra una falla real (traza de Python, memoria, proceso muerto)
+# o no muestra siquiera la carga de pesos; una carga lenta pero en marcha se entrega.
+if ! grep -q "fired up and ready to roll" "$SALUD/serve.log" 2>/dev/null; then
+  if [ -f "$SALUD/serve.log" ]; then
+    if grep -qE "Traceback \(most recent call last\)|out of memory|OutOfMemory|CUDA error|RuntimeError|Killed|core dumped" "$SALUD/serve.log" \
+       || ! grep -q "Loading safetensors checkpoint shards" "$SALUD/serve.log"; then
+      echo "NO SE ENTREGA: el servidor del modelo falló o no empezó a cargar en el guardado rápido (versión $VERSION)." >&2
+      echo "  Últimas líneas de serve.log:" >&2; tail -3 "$SALUD/serve.log" >&2
+      exit 3
+    fi
+    echo "  Servidor aún cargando pesos al terminar el guardado rápido (carga lenta, sin fallas): se entrega con la guarda de arranque"
+  else
+    echo "  (aviso: no se pudo bajar serve.log para chequear el servidor; se entrega igual)"
+  fi
+else
+  echo "  Servidor del modelo: OK en el guardado rápido"
 fi
 
 echo "== 5/5 Entregando: $DESC"
