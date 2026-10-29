@@ -47,6 +47,7 @@ Cada configuración se identifica por la huella de su notebook preparado
 | `vivos-v4s` original (no entregada) | 413a0b289a64 |
 | `vivos-v4s` revisada (rama `v4s`) | 9d748dcf6c1a |
 | F: v4s + aviso de hipótesis (rama `f2b`; entregas F-2b 31,52 y F-2b-r), `--vivos-auto` | de260c82176f |
+| F con guarda de arranque (rama `v4f`; entregas F-3c 21,38 y F-4 en adelante), `--vivos-auto` | 4b78f4916fb9 |
 | M: F + malla de objetos vivos `engine_step` (rama `motor`; entrega M-1 24,08), `--vivos-auto --motor` | 97652a37e9be |
 
 Origen: notebook de Franzen con huella 4056fbfc69bb. Los puntajes están en
