@@ -39,14 +39,35 @@ JUEGOS_PUBLICOS = [
 JUEGOS_RAPIDOS = ["ls20", "ft09"]
 MINUTOS_RAPIDOS = 15
 
+# Práctica (--minutos dado): esperar al servidor del modelo antes de fijar el presupuesto, para que
+# los minutos de juego no dependan de lo que tarde Kaggle en cargar los pesos (24-oct: 13-18 min
+# de una práctica de 45 se fueron esperando). El servidor se lanza en una celda anterior (Popen).
+ESPERA_SERVIDOR = '''
+    import urllib.request as _url
+    _base = os.environ.get("LOCAL_ANALYZER_BASE_URL", "").strip().rstrip("/")
+    _raiz = _base[:-3] if _base.endswith("/v1") else _base
+    _t0 = time.time()
+    while _raiz and time.time() - _t0 < 5400:
+        try:
+            with _url.urlopen(_raiz + "/health", timeout=5) as _r:
+                if 200 <= int(getattr(_r, "status", 200)) < 300:
+                    break
+        except Exception:
+            pass
+        time.sleep(15)
+    print(f"objetos_vivos: práctica, servidor listo tras {time.time() - _t0:.0f} s de espera")
+'''
+
+
 def bloque_rapido(juegos: list[str] | None = None, minutos: int | None = None) -> str:
     """Bloque del guardado rápido. No afecta la re-ejecución oficial (TRUE_SUBMISSION)."""
+    espera = ESPERA_SERVIDOR if minutos else ""
     juegos = juegos or JUEGOS_RAPIDOS
     minutos = minutos or MINUTOS_RAPIDOS
     return f'''
 # --- Objetos Vivos: guardado rápido (no afecta la re-ejecución oficial) ---
 COMMIT_RAPIDO = True
-if COMMIT_RAPIDO and not TRUE_SUBMISSION:
+if COMMIT_RAPIDO and not TRUE_SUBMISSION:{espera}
     demo_excluded_games = {[j for j in JUEGOS_PUBLICOS if j not in juegos]!r}
     bm.n_passes = 1
     bm.solver.concurrency = {len(juegos)}
@@ -102,6 +123,15 @@ def _celda_vivos(fuerte: bool = False, auto: bool = False) -> dict:
     return _celda(texto)
 
 
+def _celda_arranque() -> dict:
+    """Guarda de arranque (kaggle/guarda_arranque.py): en los dos modos, porque protege la corrida
+    oficial de la carga lenta del modelo en Kaggle (oct-2026)."""
+    texto = ((Path(__file__).resolve().parent / "guarda_arranque.py").read_text(encoding="utf-8")
+             + "\nprint(aplicar(BUNDLE_DIR / 'src'))\n")
+    compile(texto, "<celda_arranque>", "exec")
+    return _celda(texto)
+
+
 MARCA_CFG = "CFG = dict("
 
 
@@ -151,6 +181,8 @@ def preparar(nb: dict, envs: dict[str, str], rapido: bool, vivos: bool = False, 
         _poner(con_config[0], texto)
     fuerte = fuerte or auto
     vivos = vivos or fuerte
+    # Guarda de arranque: siempre (también en la corrida oficial), después del parche de Franzen.
+    nb["cells"].insert(nb["cells"].index(con_env[0]) + 1, _celda_arranque())
     if vivos:  # justo después de aplicar el parche de Franzen, antes de importar el harness
         nb["cells"].insert(nb["cells"].index(con_env[0]) + 1, _celda_vivos(fuerte, auto))
     if rapido:  # antes de cargar nada pesado

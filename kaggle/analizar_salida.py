@@ -36,23 +36,11 @@ MARCAS = {
     "python_tool": re.compile(r"run_python|python_tool|\"python\""),
     "vivos_celda": re.compile(r"injertados|OMITIDO|ya aplicado"),
     "auto_check": re.compile(r"\[auto-check of your retained step\]"),
-    "auto_estado": re.compile(r"\[auto-check of your observe/advance model\]"),
-    "def_observe": re.compile(r"def observe\("),
-    "unchanged": re.compile(r"\[auto-check\] UNCHANGED"),
-    "constantes": re.compile(r"Warning: your functions use"),
-}
-# Se cuentan sobre el texto crudo: son textos nuestros (el freno), no del modelo.
-MARCAS_CRUDAS = {
-    "freno": re.compile(r"turns in a row without a single game action"),
 }
 # Textos que inyecta el injerto (ayuda del prompt y recordatorio por turno): se borran antes de
 # contar, porque citan literalmente `def step(grid, action)` y `check_model(step)`.
 _INYECTADO = [
-    # Cada recordatorio es una sola línea: sin re.S, para no borrar lo que el modelo escribió entre
-    # dos recordatorios (con re.S, el freno se comía todo hasta el próximo "instead of exploring").
-    re.compile(r"\[World model\][^\n]*?(?:instead of exploring by hand\.|shows exactly where the "
-               r"hypothesis is wrong\.|as a dict \{\(row, col\): color\}\.|would clearly save actions\.|"
-               r"execute the plan\.)"),
+    re.compile(r"\[World model\].*?(?:instead of exploring by hand\.|shows exactly where the hypothesis is wrong\.)", re.S),
     re.compile(r"- World-model tools.*?improves the\s+score\.", re.S),
     re.compile(r"It explains everything seen so far: plan_with_model\(step, goal, actions\) can search"),
     re.compile(r"skip re-exploring: plan_with_model\(step, goal, actions\) right away"),
@@ -87,12 +75,10 @@ def resumir(raiz: Path, maximo: int = 3800) -> str:
         if p.suffix.lower() not in TEXTO or p.stat().st_size > 400 * 1024 * 1024:
             continue
         try:
-            crudo = p.read_text(encoding="utf-8", errors="replace")
+            texto = _limpiar(p.read_text(encoding="utf-8", errors="replace"))
         except OSError:
             continue
-        texto = _limpiar(crudo)
         c = Counter({k: len(rx.findall(texto)) for k, rx in MARCAS.items()})
-        c.update({k: len(rx.findall(crudo)) for k, rx in MARCAS_CRUDAS.items()})
         c = +c  # descarta ceros
         if c:
             por_archivo[str(p.relative_to(raiz))] = c
@@ -179,14 +165,8 @@ def _detalle_vivos(raiz: Path) -> str:
     largos: list[int] = []
     ejemplo = ""
     for t in sorted(list(raiz.rglob("transcripts/*.txt")) + list(raiz.rglob("transcripts/*.txt.gz"))):
-        crudo = _leer(t)
-        x = _limpiar(crudo)
+        x = _limpiar(_leer(t))
         juego = t.name.split("-")[0]
-        c[f"{juego}.freno"] += crudo.count("turns in a row without a single game action")
-        c[f"{juego}.def_observe"] += len(re.findall(r"def observe\(", x))
-        c[f"{juego}.auto_estado"] += x.count("[auto-check of your observe/advance model]")
-        c[f"{juego}.unchanged"] += x.count("[auto-check] UNCHANGED")
-        c[f"{juego}.aviso_constantes"] += x.count("Warning: your functions use")
         c[f"{juego}.def_step"] += len(re.findall(r"def step\(", x))
         c[f"{juego}.check"] += len(re.findall(r"(?<!`)check_model\(\s*\w", x))
         c[f"{juego}.plan"] += len(re.findall(r"(?<!`)plan_with_model\(\s*\w", x))

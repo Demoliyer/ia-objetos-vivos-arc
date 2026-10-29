@@ -100,6 +100,34 @@ class InjertoEnHarness(unittest.TestCase):
         self.assertIn("Your `step` simulator is retained", con)
         self.assertIn("No `step", nada)  # objeto sin atributos: no lanza
 
+    def test_candidata_f_aviso_de_hipotesis_una_vez_por_nivel(self):
+        aplicar(self.tmp, SIMULADOR, fuerte=True)
+        codigo = (
+            "from types import SimpleNamespace as NS\n"
+            "from inference.agent.tool_agent import ToolAgent\n"
+            "f = ToolAgent._retained_function_context\n"
+            "def h(a):\n"
+            "    return 'Hypothesis check' in f(a)\n"
+            "a = NS(_kept_functions={}, _vivos_nivel=2, _vivos_paso=20, _death_ledger_attempts=[])\n"
+            "r = [h(a)]\n"                       # inicio del nivel: no
+            "a._vivos_paso = 83; r.append(h(a))\n"  # 63 acciones: no
+            "a._vivos_paso = 84; r.append(h(a))\n"  # 64: sí
+            "a._vivos_paso = 200; r.append(h(a))\n"  # una sola vez por nivel
+            "a._vivos_nivel = 3; a._vivos_paso = 210; r.append(h(a))\n"  # nivel nuevo: no
+            "a._death_ledger_attempts = [{'ids': [1]}]; r.append(h(a))\n"  # murió en el nivel: sí
+            "r.append(h(a))\n"
+            "b = NS(_kept_functions={})\n"  # sin nivel ni paso: nunca, sin lanzar
+            "r.append(h(b))\n"
+            "print(r)\n"
+        )
+        env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "ARC3_PERSISTENT_FUNCTIONS")}
+        env["PYTHONPATH"] = str(self.tmp / "ARC3-Inference")
+        r = subprocess.run([sys.executable, "-c", codigo], capture_output=True, text=True, env=env,
+                           timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+        self.assertEqual(r.stdout.strip().splitlines()[-1],
+                         "[False, False, True, False, False, True, False, False]")
+
     def test_modo_auto_chequea_el_step_despues_del_snippet(self):
         self.assertIn("auto-chequeo", aplicar(self.tmp, SIMULADOR, auto=True))
         py_compile.compile(str(self.agente / "python_tool_sandbox.py"), doraise=True)
@@ -296,9 +324,10 @@ class PrepararNotebook(unittest.TestCase):
     def test_orden_de_celdas_con_vivos(self):
         out = preparar(copy.deepcopy(self.nb), {"ARC3_X": "1"}, rapido=True, vivos=True)
         i = self._indice_env(out)
-        self.assertEqual(len(out["cells"]), len(self.nb["cells"]) + 2)
+        self.assertEqual(len(out["cells"]), len(self.nb["cells"]) + 3)
         self.assertIn("nvidia-smi", _texto(out["cells"][i + 1]))
-        self.assertIn("aplicar(BUNDLE_DIR", _texto(out["cells"][i + 2]))
+        self.assertIn("aplicar(BUNDLE_DIR / 'src', _VIVOS_SRC", _texto(out["cells"][i + 2]))
+        self.assertIn("_vivos_guarda_arranque", _texto(out["cells"][i + 3]))
         self.assertIn("setup_env['ARC3_X'] = '1'", _texto(out["cells"][i]))
         self.assertTrue(out["metadata"]["kaggle"]["isGpuEnabled"])
         self.assertFalse(out["metadata"]["kaggle"]["isInternetEnabled"])
@@ -309,9 +338,17 @@ class PrepararNotebook(unittest.TestCase):
         self.assertIn("if COMMIT_RAPIDO and not TRUE_SUBMISSION:", config)
         self.assertIn("if not TRUE_SUBMISSION:", CELDA_GPU)
 
+    @staticmethod
+    def _sin_arranque(nb):
+        """La guarda de arranque es la única celda que se agrega en los dos modos."""
+        nb["cells"] = [c for c in nb["cells"] if "_vivos_guarda_arranque" not in _texto(c)]
+        return nb
+
     def test_completo_solo_cambia_variables(self):
         out = preparar(copy.deepcopy(self.nb), {"ARC3_X": "1"}, rapido=False, vivos=False)
-        self.assertEqual(len(out["cells"]), len(self.nb["cells"]))
+        self.assertEqual(len(out["cells"]), len(self.nb["cells"]) + 1)
+        self.assertIn("_vivos_guarda_arranque", _texto(out["cells"][self._indice_env(out) + 1]))
+        out = self._sin_arranque(out)
         textos = [_texto(c) for c in out["cells"]]
         self.assertFalse(any("COMMIT_RAPIDO" in t or "Objetos Vivos: en el guardado" in t for t in textos))
         originales = [_texto(c) for c in self.nb["cells"]]
@@ -321,6 +358,7 @@ class PrepararNotebook(unittest.TestCase):
     def test_cfg_cambia_solo_las_claves_pedidas(self):
         out = preparar(copy.deepcopy(self.nb), {}, rapido=False, vivos=False,
                        cfg={"MAXREQ": "14", "MAMBA_CACHE": "84"})
+        out = self._sin_arranque(out)
         textos = [_texto(c) for c in out["cells"]]
         originales = [_texto(c) for c in self.nb["cells"]]
         distintas = [i for i, (a, b) in enumerate(zip(originales, textos)) if a != b]
