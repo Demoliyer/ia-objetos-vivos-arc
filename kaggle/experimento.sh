@@ -143,6 +143,22 @@ if [ -n "${SIN_ENTREGAR:-}" ]; then
   echo "Guardado sin entregar: https://www.kaggle.com/code/$USUARIO/$SLUG"; exit 0
 fi
 
+# Guarda de salud (22-oct): F-1 dio 0,00 en el oculto y su guardado rápido nunca levantó el
+# servidor del modelo (la C cancelada, corriendo al mismo tiempo, tampoco). Si el servidor no
+# arrancó en el guardado rápido, la máquina o los datos de Kaggle están fallando en ese momento:
+# no se entrega (se pierde el día, no una muestra con un 0 de infraestructura).
+SALUD=$(mktemp -d)
+"$K" kernels output "$USUARIO/$SLUG" -p "$SALUD" --file-pattern '^serve\.log$' -q >/dev/null 2>&1 || true
+if ! grep -q "fired up and ready to roll" "$SALUD/serve.log" 2>/dev/null; then
+  if [ -f "$SALUD/serve.log" ]; then
+    echo "NO SE ENTREGA: el servidor del modelo no arrancó en el guardado rápido (versión $VERSION)." >&2
+    echo "  Últimas líneas de serve.log:" >&2; tail -3 "$SALUD/serve.log" >&2
+    exit 3
+  fi
+  echo "  (aviso: no se pudo bajar serve.log para chequear el servidor; se entrega igual)"
+fi
+echo "  Servidor del modelo: OK en el guardado rápido"
+
 echo "== 5/5 Entregando: $DESC"
 # La versión ya está corrida: un error de red no tiene que hacer perder la entrega.
 for INTENTO in 1 2 3 4 5; do

@@ -100,6 +100,34 @@ class InjertoEnHarness(unittest.TestCase):
         self.assertIn("Your `step` simulator is retained", con)
         self.assertIn("No `step", nada)  # objeto sin atributos: no lanza
 
+    def test_candidata_f_aviso_de_hipotesis_una_vez_por_nivel(self):
+        aplicar(self.tmp, SIMULADOR, fuerte=True)
+        codigo = (
+            "from types import SimpleNamespace as NS\n"
+            "from inference.agent.tool_agent import ToolAgent\n"
+            "f = ToolAgent._retained_function_context\n"
+            "def h(a):\n"
+            "    return 'Hypothesis check' in f(a)\n"
+            "a = NS(_kept_functions={}, _vivos_nivel=2, _vivos_paso=20, _death_ledger_attempts=[])\n"
+            "r = [h(a)]\n"                       # inicio del nivel: no
+            "a._vivos_paso = 83; r.append(h(a))\n"  # 63 acciones: no
+            "a._vivos_paso = 84; r.append(h(a))\n"  # 64: sí
+            "a._vivos_paso = 200; r.append(h(a))\n"  # una sola vez por nivel
+            "a._vivos_nivel = 3; a._vivos_paso = 210; r.append(h(a))\n"  # nivel nuevo: no
+            "a._death_ledger_attempts = [{'ids': [1]}]; r.append(h(a))\n"  # murió en el nivel: sí
+            "r.append(h(a))\n"
+            "b = NS(_kept_functions={})\n"  # sin nivel ni paso: nunca, sin lanzar
+            "r.append(h(b))\n"
+            "print(r)\n"
+        )
+        env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "ARC3_PERSISTENT_FUNCTIONS")}
+        env["PYTHONPATH"] = str(self.tmp / "ARC3-Inference")
+        r = subprocess.run([sys.executable, "-c", codigo], capture_output=True, text=True, env=env,
+                           timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+        self.assertEqual(r.stdout.strip().splitlines()[-1],
+                         "[False, False, True, False, False, True, False, False]")
+
     def test_modo_auto_chequea_el_step_despues_del_snippet(self):
         self.assertIn("auto-chequeo", aplicar(self.tmp, SIMULADOR, auto=True))
         py_compile.compile(str(self.agente / "python_tool_sandbox.py"), doraise=True)

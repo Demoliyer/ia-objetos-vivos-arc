@@ -208,6 +208,19 @@ RECORDATORIO_CON_STEP = (
     "`plan_with_model(step, goal, actions)` and execute the returned plan instead of exploring by hand."
 )
 
+# Candidata F (Astra, 21-oct; diagnóstico de ls20): una vez por nivel, tras el primer intento
+# fallido del nivel o 64 acciones sin cambiar de nivel, pedir separar reglas de movimiento de la
+# condición de victoria y diseñar una prueba que distinga dos hipótesis. Sin nada propio de un juego.
+RECORDATORIO_HIPOTESIS = (
+    "[Hypothesis check] Before repeating the attempt, separate movement rules from completion "
+    "conditions. Inspect before/after observations of an uncertain interaction, including edge "
+    "displays. State two hypotheses and the different observable outcomes they predict. Choose a "
+    "short, low-cost test that distinguishes them. After the test, record what was observed and "
+    "which hypothesis remains possible. A matching simulation does not establish the game's "
+    "completion condition."
+)
+UMBRAL_HIPOTESIS = 64
+
 # Modo fuerte: un recordatorio de una línea al final de cada mensaje de turno. Envuelve
 # ToolAgent._retained_function_context (harness de Franzen); si falla, devuelve lo original.
 COLA_AGENTE = """
@@ -216,6 +229,7 @@ COLA_AGENTE = """
 def _vivos_envolver_contexto():
     _orig = ToolAgent._retained_function_context
     _sin, _con, _freno, _estado, _TOPE = __SIN__, __CON__, __FRENO__, __ESTADO__, 0  # 0 = freno apagado
+    _hipo, _UMBRAL = __HIPO__, __UMBRAL__
 
     def _retained_function_context(self):
         base = _orig(self)
@@ -235,6 +249,20 @@ def _vivos_envolver_contexto():
                     texto = _freno.format(n=self._vivos_sin_jugar)
             except Exception:
                 pass
+            try:  # candidata F: una vez por nivel, tras un intento fallido o _UMBRAL acciones
+                nivel, paso = getattr(self, "_vivos_nivel", None), getattr(self, "_vivos_paso", None)
+                muertes = len(getattr(self, "_death_ledger_attempts", None) or [])
+                if nivel is not None and paso is not None:
+                    if nivel != getattr(self, "_vivos_h_nivel", None):
+                        self._vivos_h_nivel, self._vivos_h_paso0 = nivel, paso
+                        self._vivos_h_muertes0, self._vivos_h_dado = muertes, False
+                    murio = muertes > getattr(self, "_vivos_h_muertes0", muertes)
+                    largo = paso - getattr(self, "_vivos_h_paso0", paso) >= _UMBRAL
+                    if not getattr(self, "_vivos_h_dado", True) and (murio or largo):
+                        self._vivos_h_dado = True
+                        texto = texto + "\\n\\n" + _hipo
+            except Exception:
+                pass
             return base + "\\n\\n" + texto
         except Exception:
             return base
@@ -246,6 +274,7 @@ def _vivos_envolver_contexto():
     def _build_user_message(self, user_prompt, current_frame):
         try:  # Frame.step = acciones del juego hasta ahora: sirve para saber si hubo jugada
             self._vivos_paso = getattr(current_frame, "step", None)
+            self._vivos_nivel = getattr(current_frame, "level", None)
         except Exception:
             pass
         return _orig_msg(self, user_prompt, current_frame)
@@ -362,7 +391,9 @@ def _aplicar(src_root, vivos_src: str, fuerte: bool = False, auto: bool = False)
         cola_agente = (COLA_AGENTE.replace("__SIN__", repr(RECORDATORIO_SIN_STEP))
                        .replace("__CON__", repr(RECORDATORIO_CON_STEP))
                        .replace("__FRENO__", repr(RECORDATORIO_FRENO))
-                       .replace("__ESTADO__", repr(RECORDATORIO_CON_ESTADO)))
+                       .replace("__ESTADO__", repr(RECORDATORIO_CON_ESTADO))
+                       .replace("__HIPO__", repr(RECORDATORIO_HIPOTESIS))
+                       .replace("__UMBRAL__", str(UMBRAL_HIPOTESIS)))
         if auto and "run_sandboxed_python(" in a and "def _run_python_tool(self" in a:
             cola_agente += COLA_SIN_REPETIR
         compile(a + cola_agente, str(agente), "exec")
