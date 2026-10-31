@@ -42,10 +42,22 @@ jobs:
           pip install --quiet "kaggle==2.2.4"
           read -r -a ARGS <<< "$COMANDO"
           case "${ARGS[0]:-} ${ARGS[1]:-}" in
-            "competitions submissions"|"competitions leaderboard"|"kernels status"|"kernels list"|"config view"|"cuota ") ;;
+            "competitions submissions"|"competitions leaderboard"|"kernels status"|"kernels list"|"config view"|"cuota "|"reglas ") ;;
             *) echo "::error::Comando no permitido: $COMANDO"; exit 1 ;;
           esac
-          if [ "${ARGS[0]}" = "cuota" ]; then
+          if [ "${ARGS[0]}" = "reglas" ]; then
+            # Metadatos de las competencias ARC Prize 2026 (entregas por día, fechas): solo lectura.
+            RESUMEN=$(python3 - <<'PY' 2>&1 | tr '\n' '|'
+          from kaggle.api.kaggle_api_extended import KaggleApi
+          api = KaggleApi(); api.authenticate()
+          for c in api.competitions_list(search="arc-prize-2026") or []:
+              d = c.to_dict() if hasattr(c, "to_dict") else vars(c)
+              claves = [k for k in d if any(s in k.lower() for s in ("ref", "deadline", "daily", "submission", "team", "date", "kernel", "private"))]
+              print("; ".join(f"{k}={d[k]}" for k in claves))
+          PY
+          )
+            RC=0
+          elif [ "${ARGS[0]}" = "cuota" ]; then
             # Cuota semanal de GPU/TPU de la cuenta (solo lectura).
             RESUMEN=$(python3 - <<'PY' 2>&1 | tr '\n' '|'
           from kaggle.api.kaggle_api_extended import KaggleApi
