@@ -50,12 +50,20 @@ jobs:
             RESUMEN=$(python3 - <<'PY' 2>&1 | tr '\n' '|'
           from kaggle.api.kaggle_api_extended import KaggleApi
           api = KaggleApi(); api.authenticate()
-          for c in api.competitions_list(search="arc-prize-2026") or []:
-              d = c.to_dict() if hasattr(c, "to_dict") else vars(c)
+          try:
+              lista = api.competitions_list(search="arc-prize-2026")
+          except Exception as e:
+              print("competitions_list fallo:", repr(e)[:300]); lista = []
+          lista = getattr(lista, "competitions", lista) or []
+          for c in lista:
+              try:
+                  d = c.to_dict() if hasattr(c, "to_dict") else vars(c)
+              except Exception:
+                  d = {k: getattr(c, k) for k in dir(c) if not k.startswith("_") and not callable(getattr(c, k, None))}
               claves = [k for k in d if any(s in k.lower() for s in ("ref", "deadline", "daily", "submission", "team", "date", "kernel", "private"))]
-              print("; ".join(f"{k}={d[k]}" for k in claves))
+              print("; ".join(f"{k}={d[k]}" for k in claves)[:900])
           PY
-          )
+          ) || true
             RC=0
           elif [ "${ARGS[0]}" = "cuota" ]; then
             # Cuota semanal de GPU/TPU de la cuenta (solo lectura).
