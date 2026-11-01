@@ -115,8 +115,7 @@ jobs:
             tail -5 salida.txt
             RESUMEN=$(python kaggle/analizar_salida.py salida_kernel 2>&1 | tr '\n' ' ' | cut -c1-3800)
           else
-            kaggle "${ARGS[@]}" > salida.txt 2>&1
-            RC=$?
+            RC=0; kaggle "${ARGS[@]}" > salida.txt 2>&1 || RC=$?
             cat salida.txt
             RESUMEN=$(head -40 salida.txt | tr '\n' '|' | cut -c1-3800)
           fi
