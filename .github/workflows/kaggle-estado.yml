@@ -39,7 +39,7 @@ jobs:
         run: |
           set -uo pipefail
           [ -n "$KAGGLE_API_TOKEN" ] || { echo "::error::Falta el secret KAGGLE_API_TOKEN"; exit 1; }
-          pip install --quiet "kaggle==2.2.4"
+          pip install --quiet "kaggle==2.2.4" six
           read -r -a ARGS <<< "$COMANDO"
           case "${ARGS[0]:-} ${ARGS[1]:-}" in
             "competitions submissions"|"competitions leaderboard"|"kernels status"|"kernels list"|"config view"|"cuota "|"reglas ") ;;

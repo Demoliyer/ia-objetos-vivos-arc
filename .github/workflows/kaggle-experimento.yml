@@ -59,7 +59,7 @@ jobs:
           [ -n "$KAGGLE_API_TOKEN" ] || { echo "::error::Falta el secret KAGGLE_API_TOKEN"; exit 1; }
           [ -n "$KAGGLE_USERNAME" ] || { echo "::error::Falta la variable KAGGLE_USERNAME"; exit 1; }
           python -m venv kaggle/kit/.venv
-          kaggle/kit/.venv/bin/pip install --quiet "kaggle==2.2.4"
+          kaggle/kit/.venv/bin/pip install --quiet "kaggle==2.2.4" six
           mkdir -p kaggle/kit/.kaggle
           umask 077
           printf '%s' "$KAGGLE_API_TOKEN" > kaggle/kit/.kaggle/access_token
